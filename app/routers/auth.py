@@ -18,6 +18,7 @@ from app.services.auth import (
 from app.utils.security import create_access_token, create_refresh_token
 from app.config import settings
 from datetime import timedelta
+from app.utils.auth import get_current_user
 from app.models.user import User
 
 router = APIRouter()
