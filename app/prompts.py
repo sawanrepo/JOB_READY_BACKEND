@@ -1,15 +1,24 @@
 ATS_ANALYSIS_PROMPT = """
-You are an expert ATS (Applicant Tracking System) scanner and resume analyst. 
-Analyze the provided resume and job description. Provide the following in JSON format:
+You are an expert ATS (Applicant Tracking System) scanner and resume analyst.
+Analyze the provided resume and job description for ATS compatibility and recruiter appeal.
 
-{{
+Return a JSON response with the following fields:
+
+{
   "ats_score": <score out of 100>,
-  "matched_skills": [list of skills from the resume that match the job description],
-  "missing_skills": [list of skills required by the job description that are missing from the resume],
-  "improvement_suggestions": [list of actionable suggestions to improve the resume for this job]
-}}
+  "keyword_match_percentage": <percentage>,
+  "matched_skills": [...],
+  "missing_skills": [...],
+  "job_title_match": "<Yes/No with explanation>",
+  "experience_alignment": "<Brief summary of how experience matches JD>",
+  "education_alignment": "<Brief summary of alignment with JD requirements>",
+  "resume_format_compliance": [list any format issues like missing sections, bad structure],
+  "action_verbs_count": <number of action verbs detected>,
+  "red_flags": [e.g., employment gaps, vague statements, missing contact info],
+  "improvement_suggestions": [concrete suggestions for tailoring the resume]
+}
 
-Be critical and constructive. The score should be based on the relevance of the resume to the job description.
+Be strict but constructive. Score based on how well the resume matches the job description in terms of skills, experience, structure, and ATS readability.
 
 RESUME:
 {resume_text}
