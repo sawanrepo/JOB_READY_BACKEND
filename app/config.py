@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     EMAIL_FROM: EmailStr = Field(..., env="EMAIL_FROM")
     
     # CORS
-    CORS_ORIGINS: List[AnyHttpUrl] = Field(..., env="CORS_ORIGINS")
+    CORS_ORIGINS: List[str] = Field(..., env="CORS_ORIGINS")
     
     # Gemini
     GEMINI_API_KEY: str = Field(..., env="GEMINI_API_KEY")
