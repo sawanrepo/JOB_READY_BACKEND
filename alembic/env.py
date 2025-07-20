@@ -1,24 +1,34 @@
 from logging.config import fileConfig
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncConnection
 from alembic import context
-
-# 🔽 Import your Base and all models
+import os
+import asyncio
+from dotenv import load_dotenv
+from app.models.user import User
 from app.database import Base
-from app.models import user  # If you have more models, import them here too
 
-# this is the Alembic Config object, which provides access to the .ini file values
+# For Windows event loop policy
+import sys
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# Load environment variables
+load_dotenv()
+
 config = context.config
 
-# Interpret the config file for Python logging
-fileConfig(config.config_file_name)
+# Setup logging
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
 
-# Set your models' metadata for autogenerate to work
 target_metadata = Base.metadata
 
-
-def run_migrations_offline():
+def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
-    url = config.get_main_option("sqlalchemy.url")
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        raise ValueError("DATABASE_URL environment variable not set")
+    
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -29,26 +39,28 @@ def run_migrations_offline():
     with context.begin_transaction():
         context.run_migrations()
 
-
-def run_migrations_online():
-    """Run migrations in 'online' mode."""
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
+async def run_async_migrations():
+    """Async migration function using SQLAlchemy 2.0 async API"""
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        raise ValueError("DATABASE_URL environment variable not set")
+    
+    # Create async engine
+    connectable = create_async_engine(url)
+    
+    async with connectable.connect() as connection:
+        await connection.run_sync(
+            lambda sync_conn: context.configure(
+                connection=sync_conn, 
+                target_metadata=target_metadata
+            )
         )
-
-        with context.begin_transaction():
-            context.run_migrations()
-
+        
+        async with connection.begin():
+            await connection.run_sync(lambda sync_conn: context.run_migrations())
 
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    run_migrations_online()
+    # Run async migrations in event loop
+    asyncio.run(run_async_migrations())
