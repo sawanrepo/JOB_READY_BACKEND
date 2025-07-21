@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from app.schemas.resume import ResumeAnalysisResponse, TailoredResumeResponse
-from app.services.resume import analyze_resume, tailor_resume
+from app.services.resume import run_analyze_resume, tailor_resume
 from app.routers.auth import get_current_user
 from app.models.user import User
+from app.utils.file import extract_text_from_pdf
 import os
 from fastapi.responses import FileResponse
 
@@ -14,7 +15,9 @@ async def ats_check(
     job_description: str = Form(...),
     current_user: User = Depends(get_current_user)
 ):
-    return await analyze_resume(resume_pdf, job_description)
+    print("📥 /resume/ats-check called")
+    resume_text = await extract_text_from_pdf(resume_pdf)
+    return await run_analyze_resume(resume_text, job_description)
 
 @router.post("/tailor-resume", response_model=TailoredResumeResponse)
 async def tailor_resume_endpoint(

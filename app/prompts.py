@@ -4,7 +4,7 @@ Analyze the provided resume and job description for ATS compatibility and recrui
 
 Return a JSON response with the following fields:
 
-{
+{{
   "ats_score": <score out of 100>,
   "keyword_match_percentage": <percentage>,
   "matched_skills": [...],
@@ -16,7 +16,7 @@ Return a JSON response with the following fields:
   "action_verbs_count": <number of action verbs detected>,
   "red_flags": [e.g., employment gaps, vague statements, missing contact info],
   "improvement_suggestions": [concrete suggestions for tailoring the resume]
-}
+}}
 
 Be strict but constructive. Score based on how well the resume matches the job description in terms of skills, experience, structure, and ATS readability.
 
