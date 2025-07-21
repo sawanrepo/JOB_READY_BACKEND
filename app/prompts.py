@@ -19,6 +19,7 @@ Return a JSON response with the following fields:
 }}
 
 Be strict but constructive. Score based on how well the resume matches the job description in terms of skills, experience, structure, and ATS readability.
+"You may ignore exact dates of internships or education. However, still evaluate overall educational qualifications and relevance to the job description."
 
 RESUME:
 {resume_text}

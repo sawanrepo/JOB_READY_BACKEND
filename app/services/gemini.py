@@ -13,7 +13,6 @@ class GeminiService:
         )
     
     async def analyze_resume(self, resume_text: str, job_description: str) -> dict:
-        from pprint import pprint
         prompt = ATS_ANALYSIS_PROMPT.format(
             resume_text=resume_text,
             job_description=job_description
@@ -23,18 +22,16 @@ class GeminiService:
             SystemMessage(content="You are an expert resume analyst."),
             HumanMessage(content=prompt)
         ]
-        print("\n📨 Sending prompt to Gemini...\n")
-        
+
         response = await self.llm.agenerate([messages])
         content = response.generations[0][0].text
-        print("\n📩 Gemini raw response:\n", content)
-        
+
         try:
             # Handle Gemini's markdown-style JSON output
             if content.startswith("```json"):
                 content = content[7:-3].strip()
             return json.loads(content)
-            
+
         except json.JSONDecodeError:
             # Fallback: Extract JSON from text
             start = content.find('{')

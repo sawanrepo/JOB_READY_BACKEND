@@ -5,14 +5,12 @@ from fastapi import UploadFile, HTTPException
 from app.prompts import ATS_ANALYSIS_PROMPT
 from langchain.schema import SystemMessage, HumanMessage
 import os
+import json
+import traceback
 
 gemini_service = GeminiService()
 
 async def run_analyze_resume(resume_text: str, job_description: str) -> dict:
-    import json
-    import traceback
-    from pprint import pprint
-
     prompt = ATS_ANALYSIS_PROMPT.format(
         resume_text=resume_text,
         job_description=job_description
@@ -22,26 +20,18 @@ async def run_analyze_resume(resume_text: str, job_description: str) -> dict:
         SystemMessage(content="You are an expert resume analyst."),
         HumanMessage(content=prompt)
     ]
-
-    print("\n📨 Sending prompt to Gemini...\n")
     try:
         response = await gemini_service.llm.agenerate([messages])
         content = response.generations[0][0].text
-        print("\n📩 Gemini raw response:\n", content)
-
-        # Clean code block markers
+       # Clean code block markers
         if content.startswith("```json"):
             content = content[7:-3].strip()
 
         # Try parsing JSON
         parsed = json.loads(content)
-        print("\n✅ Parsed response:")
-        pprint(parsed)
-
         return parsed
 
     except Exception as e:
-        print("\n❌ Gemini or JSON parsing failed:")
         traceback.print_exc()
         raise e
 

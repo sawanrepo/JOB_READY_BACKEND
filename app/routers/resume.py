@@ -15,7 +15,7 @@ async def ats_check(
     job_description: str = Form(...),
     current_user: User = Depends(get_current_user)
 ):
-    print("📥 /resume/ats-check called")
+    
     resume_text = await extract_text_from_pdf(resume_pdf)
     return await run_analyze_resume(resume_text, job_description)
 
