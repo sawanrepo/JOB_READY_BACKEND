@@ -3,6 +3,8 @@ from langchain.schema import HumanMessage, SystemMessage
 import json
 from app.config import settings
 from app.prompts import ATS_ANALYSIS_PROMPT, TAILOR_RESUME_PROMPT
+from fastapi import HTTPException
+import re
 
 class GeminiService:
     def __init__(self):
@@ -38,7 +40,8 @@ class GeminiService:
             end = content.rfind('}') + 1
             return json.loads(content[start:end])
     
-    async def tailor_resume(self, resume_text: str, job_description: str) -> str:
+    async def tailor_resume(self, resume_text: str, job_description: str) -> dict:
+        print("[INFO] Building prompt for Gemini...")
         prompt = TAILOR_RESUME_PROMPT.format(
             resume_text=resume_text,
             job_description=job_description
@@ -48,6 +51,25 @@ class GeminiService:
             SystemMessage(content="You are a professional resume writer."),
             HumanMessage(content=prompt)
         ]
+        print("[INFO] Sending to Gemini...")
         
         response = await self.llm.agenerate([messages])
-        return response.generations[0][0].text
+        content =  response.generations[0][0].text
+        print("[DEBUG] Gemini raw output:")
+        print(content[:100] + "...")
+        if content.startswith("```json"):
+            content = content[7:-3].strip()
+        elif content.startswith("```"):
+            content = re.sub(r'^```.*\n', '', content, flags=re.DOTALL)
+            content = re.sub(r'\n```$', '', content)
+        try:
+            parased = json.loads(content)
+            print("[DEBUG] Gemini response parsed successfully.")
+            return parased
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] Failed to parse Gemini response: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to parse Gemini response. \nError: {str(e)} \n \n raw response: {content}"
+            )
+        

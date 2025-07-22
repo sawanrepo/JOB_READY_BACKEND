@@ -1,12 +1,97 @@
-\documentclass{article}
-\usepackage[utf8]{inputenc}
-\usepackage[margin=0.5in]{geometry}
+\documentclass[10pt]{article}
 \usepackage{parskip}
-\usepackage{fontspec}
-\setmainfont{Arial}
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fontawesome}
+
+\titleformat{\section}{\large\bfseries\color{blue}}{}{0em}{}[\titlerule]
 
 \begin{document}
 
-\section*{\centering \VAR{content | replace('_', '\\_')}}
+%====================
+% Header
+%====================
+\begin{center}
+    {\Huge \bfseries \VAR{content.name}}\\
+    \VAR{content.email} \quad | \quad \VAR{content.phone} \quad | \quad \href{\VAR{content.linkedin}}{LinkedIn} \quad | \quad \href{\VAR{content.github}}{GitHub}
+\end{center}
+
+\vspace{0.5em}
+
+%====================
+% Summary
+%====================
+\BLOCK{ if content.summary }
+\section*{Summary}
+\small \VAR{content.summary}
+\BLOCK{ endif }
+
+%====================
+% Skills
+%====================
+\BLOCK{ if content.skills }
+\section*{Skills}
+\begin{itemize}[leftmargin=1em]
+    \BLOCK{ for skill in content.skills }
+        \item \VAR{skill}
+    \BLOCK{ endfor }
+\end{itemize}
+\BLOCK{ endif }
+
+%====================
+% Experience
+%====================
+\BLOCK{ if content.experience }
+\section*{Experience}
+\BLOCK{ for exp in content.experience }
+\textbf{\VAR{exp.role}} \hfill \VAR{exp.duration}\\
+\VAR{exp.company}\\
+\begin{itemize}[leftmargin=1em]
+    \BLOCK{ for point in exp.details }
+        \item \VAR{point}
+    \BLOCK{ endfor }
+\end{itemize}
+\vspace{0.5em}
+\BLOCK{ endfor }
+\BLOCK{ endif }
+
+%====================
+% Projects
+%====================
+\BLOCK{ if content.projects }
+\section*{Projects}
+\BLOCK{ for project in content.projects }
+\textbf{\VAR{project.name}} \hfill \href{\VAR{project.link}}{\VAR{project.link}}\\
+\VAR{project.description}
+\vspace{0.5em}
+\BLOCK{ endfor }
+\BLOCK{ endif }
+
+%====================
+% Education
+%====================
+\BLOCK{ if content.education }
+\section*{Education}
+\BLOCK{ for edu in content.education }
+\textbf{\VAR{edu.degree}} - \VAR{edu.institution} \hfill \VAR{edu.year}\\
+\VAR{edu.grade}
+\vspace{0.5em}
+\BLOCK{ endfor }
+\BLOCK{ endif }
+
+%====================
+% Certifications
+%====================
+\BLOCK{ if content.certifications }
+\section*{Certifications}
+\begin{itemize}[leftmargin=1em]
+    \BLOCK{ for cert in content.certifications }
+        \item \textbf{\VAR{cert.title}} \hfill \VAR{cert.date}
+    \BLOCK{ endfor }
+\end{itemize}
+\BLOCK{ endif }
 
 \end{document}

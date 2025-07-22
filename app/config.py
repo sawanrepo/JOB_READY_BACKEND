@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     
     # Gemini
     GEMINI_API_KEY: str = Field(..., env="GEMINI_API_KEY")
+
+    LATEX_PATH: str = Field(default="pdflatex")
     
     class Config:
         env_file = ".env"

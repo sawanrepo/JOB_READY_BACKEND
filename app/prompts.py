@@ -19,8 +19,9 @@ Return a JSON response with the following fields:
 }}
 
 Be strict but constructive. Score based on how well the resume matches the job description in terms of skills, experience, structure, and ATS readability.
-"You may ignore exact dates of internships or education. However, still evaluate overall educational qualifications and relevance to the job description."
-
+You may ignore exact dates of internships or education. However, still evaluate overall educational qualifications and relevance to the job description.
+Don't Include career Gap as red flag if applying for internship or entry-level positions.
+u dont have access to current date and time so avoid that in your analysis
 RESUME:
 {resume_text}
 
@@ -29,14 +30,73 @@ JOB DESCRIPTION:
 """
 
 TAILOR_RESUME_PROMPT = """
-You are a professional resume writer. Tailor the provided resume to the job description. 
-Focus on:
-- Highlighting relevant skills and experiences
-- Using keywords from the job description
-- Adjusting the summary/objective to align with the job
-- Reordering sections to prioritize relevant information
+You are a professional resume writing assistant. Your task is to tailor the candidate's resume to match the given job description.
 
-Return ONLY the tailored resume content in plain text. Do not include any explanations or markdown formatting.
+Optimize for:
+- Rewriting the **summary** to align with the role
+- Highlighting **relevant skills, projects, and experiences**
+- Using **keywords** and phrases found in the job description
+- Adjusting **order** of sections to emphasize relevant content
+- Omitting irrelevant or weak details
+
+Respond with a **structured JSON object** with the following fields. Return only valid JSON without markdown, code fences, or explanations.
+
+Expected format:
+{{
+  "name": "Full Name",
+  "tagline": "One-line title",
+  "personal_info": {{
+    "location": "",
+    "phone": "",
+    "email": "",
+    "github": "",
+    "github_url": "",
+    "linkedin": "",
+    "linkedin_url": "",
+    "portfolio": "",
+    "portfolio_url": ""
+  }},
+  "summary": "Updated and targeted summary paragraph.",
+  "skills": {{
+    "Languages": [],
+    "Frameworks": [],
+    "Databases & Tools": [],
+    "Cloud Platforms": [],
+    "Concepts": [],
+    "APIs": []
+  }},
+  "experience": [
+    {{
+      "role": "",
+      "company": "",
+      "duration": "",
+      "details": ["Point 1", "Point 2"]
+    }}
+  ],
+  "projects": [
+    {{
+      "title": "",
+      "link": "",
+      "tech_stack": "",
+      "details": ["Point 1", "Point 2"]
+    }}
+  ],
+  "education": [
+    {{
+      "degree": "",
+      "institution": "",
+      "start_date": "",
+      "end_date": ""
+    }}
+  ],
+  "certifications": [
+    {{
+      "title": "",
+      "link": "",
+      "date": ""
+    }}
+  ]
+}}
 
 RESUME:
 {resume_text}

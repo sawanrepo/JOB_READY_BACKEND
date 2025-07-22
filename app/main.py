@@ -5,6 +5,7 @@ from app.database import engine, Base
 from app.routers import auth, resume
 from app.config import settings
 from contextlib import asynccontextmanager
+from fastapi.staticfiles import StaticFiles
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +36,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.mount("/resume/download", StaticFiles(directory="output"), name="resume-download")
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(resume.router, prefix="/resume", tags=["Resume"])
