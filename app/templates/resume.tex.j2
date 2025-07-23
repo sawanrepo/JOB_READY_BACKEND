@@ -113,14 +113,14 @@
 \BLOCK{ if content.education }
 \section*{Education}
 \BLOCK{ for edu in content.education }
-\textbf{\VAR{edu.degree}} - \VAR{edu.institution}%
+\textbf{\VAR{edu.degree}}%
 \BLOCK{ if edu["start\\_date"] or edu["end\\_date"] }
     \hfill
     \BLOCK{ if edu["start\\_date"] }\VAR{edu["start_date"]}\BLOCK{ endif }%
     \BLOCK{ if edu["start\\_date"] and edu["end\\_date"] } -- BLOCK{ endif }%
     \BLOCK{ if edu["end\\_date"] }\VAR{edu["end_date"]}\BLOCK{ endif }
 \BLOCK{ endif }\\
-
+{\color{blue} \VAR{edu.institution}}\\
 
 \BLOCK{ if edu.grade }
     \textit{Grade:} \VAR{edu.grade}
