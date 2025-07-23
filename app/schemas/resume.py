@@ -32,13 +32,12 @@ class ExperienceItem(BaseModel):
     role: Optional[str] = None
     company: Optional[str] = None
     duration: Optional[str] = None
-    details: List[str] = []
+    details: Optional[List[str]] = None
 
 class ProjectItem(BaseModel):
     title: Optional[str] = None
-    link: Optional[str] = None
     tech_stack: Optional[str] = None
-    details: List[str] = []
+    details: Optional[List[str]] = None
 
 class EducationItem(BaseModel):
     degree: Optional[str] = None
@@ -51,24 +50,17 @@ class CertificationItem(BaseModel):
     link: Optional[str] = None
     date: Optional[str] = None
 
-class Skills(BaseModel):
-    Languages: List[str] = []
-    Frameworks: List[str] = []
-    Databases_and_Tools: List[str] = []
-    Cloud_Platforms: List[str] = []
-    Concepts: List[str] = []
-    APIs: List[str] = []
 
 class TailoredContent(BaseModel):
     name: Optional[str] = None
     tagline: Optional[str] = None
     personal_info: Optional[PersonalInfo] = None
     summary: Optional[str] = None
-    skills: Optional[Skills] = None
-    experience: List[ExperienceItem] = []
-    projects: List[ProjectItem] = []
-    education: List[EducationItem] = []
-    certifications: List[CertificationItem] = []
+    skills: Optional[dict] = None
+    experience: Optional[List[ExperienceItem]] = None
+    projects: Optional[List[ProjectItem]] = None
+    education: Optional[List[EducationItem]] = None
+    certifications: Optional[List[CertificationItem]] = None
 
 class TailoredResumeResponse(BaseModel):
     tailored_content: Optional[TailoredContent] = None

@@ -58,12 +58,10 @@ Expected format:
   }},
   "summary": "Updated and targeted summary paragraph.",
   "skills": {{
+    <"key">: ["skill1", "skill2", ...],
     "Languages": [],
     "Frameworks": [],
-    "Databases & Tools": [],
-    "Cloud Platforms": [],
-    "Concepts": [],
-    "APIs": []
+    you can add more categories as needed with relevant skills.
   }},
   "experience": [
     {{
@@ -76,7 +74,6 @@ Expected format:
   "projects": [
     {{
       "title": "",
-      "link": "",
       "tech_stack": "",
       "details": ["Point 1", "Point 2"]
     }}

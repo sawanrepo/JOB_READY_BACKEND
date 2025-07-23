@@ -16,7 +16,39 @@
 %====================
 \begin{center}
     {\Huge \bfseries \VAR{content.name}}\\
-    \VAR{content.email} \quad | \quad \VAR{content.phone} \quad | \quad \href{\VAR{content.linkedin}}{LinkedIn} \quad | \quad \href{\VAR{content.github}}{GitHub}
+    \BLOCK{ if content.tagline }
+        {\large \bfseries \VAR{content.tagline}}\\
+    \BLOCK{ endif }
+
+    \VAR{content["personal\\_info"].email} \quad | \quad 
+    \VAR{content["personal\\_info"].phone} \quad | \quad
+    \VAR{content["personal\\_info"].location} \\
+
+    % linkedin
+    \BLOCK{ if content["personal\\_info"].linkedin and content["personal\\_info"]["linkedin\\_url"] }
+        \href{\VAR{content["personal\\_info"]["linkedin\\_url"]}}{\VAR{content["personal\\_info"].linkedin}} \quad | \quad
+    \BLOCK{ elif content["personal\\_info"].linkedin }
+        \VAR{content["personal\\_info"].linkedin} \quad | \quad
+    \BLOCK{ elif content["personal\\_info"]["linkedin\\_url"] }
+        \href{\VAR{content["personal\\_info"]["linkedin\\_url"]}}{LinkedIn} \quad | \quad
+    \BLOCK{ endif }
+    % github
+    \BLOCK{ if content["personal\\_info"].github and content["personal\\_info"]["github\\_url"] }
+        \href{\VAR{content["personal\\_info"]["github\\_url"]}}{\VAR{content["personal\\_info"].github}} \quad | \quad
+    \BLOCK{ elif content["personal\\_info"].github }
+        \VAR{content["personal\\_info"].github} \quad | \quad
+    \BLOCK{ elif content["personal\\_info"]["github\\_url"] }
+        \href{\VAR{content["personal\\_info"]["github\\_url"]}} {GitHub} \quad | \quad
+    \BLOCK{ endif }
+    % portfolio
+    \BLOCK{ if content["personal\\_info"].portfolio and content["personal\\_info"]["portfolio\\_url"] }
+        \href{\VAR{content["personal\\_info"]["portfolio\\_url"]}}{\VAR{content["personal\\_info"].portfolio}} \quad | \quad
+    \BLOCK{ elif content["personal\\_info"].portfolio }
+        \VAR{content["personal\\_info"].portfolio} \quad | \quad    
+    \BLOCK{ elif content["personal\\_info"]["portfolio\\_url"] }
+        \href{\VAR{content["personal\\_info"]["portfolio\\_url"]}} {Portfolio} \quad | \quad
+    \BLOCK{ endif }
+    
 \end{center}
 
 \vspace{0.5em}
@@ -35,8 +67,8 @@
 \BLOCK{ if content.skills }
 \section*{Skills}
 \begin{itemize}[leftmargin=1em]
-    \BLOCK{ for skill in content.skills }
-        \item \VAR{skill}
+    \BLOCK{ for category, skills in content.skills.items() }
+        \item \textbf{\VAR{category}}: \VAR{skills | join(', ')}
     \BLOCK{ endfor }
 \end{itemize}
 \BLOCK{ endif }
@@ -64,8 +96,13 @@
 \BLOCK{ if content.projects }
 \section*{Projects}
 \BLOCK{ for project in content.projects }
-\textbf{\VAR{project.name}} \hfill \href{\VAR{project.link}}{\VAR{project.link}}\\
-\VAR{project.description}
+\textbf{\VAR{project.title}}\\
+\textit{Tech Stack:} \VAR{project["tech\\_stack"] | default("N/A")}
+\begin{itemize}[leftmargin=1em]
+    \BLOCK{ for detail in project.details }
+        \item \VAR{detail}
+    \BLOCK{ endfor }
+\end{itemize}
 \vspace{0.5em}
 \BLOCK{ endfor }
 \BLOCK{ endif }

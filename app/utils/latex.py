@@ -70,6 +70,7 @@ def render_latex_template(content: dict) -> str:
         rendered = template.render(content=content)
         return rendered
     except Exception as e:
+        print(f"[ERROR] Template rendering failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Template rendering failed: {str(e)}")
 
 def compile_latex_to_pdf(tex_content: str, output_dir: str = "output") -> str:
