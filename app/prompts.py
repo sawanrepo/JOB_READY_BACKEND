@@ -82,6 +82,7 @@ Expected format:
     {{
       "degree": "",
       "institution": "",
+      "grade": "", # Optional
       "start_date": "",
       "end_date": ""
     }}
