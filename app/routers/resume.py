@@ -6,6 +6,10 @@ from app.models.user import User
 from app.utils.file import extract_text_from_pdf
 import os
 from fastapi.responses import FileResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
+from app.utils.usage import can_use_feature, deduct_feature_usage
+from datetime import datetime, timedelta, timezone
 
 router = APIRouter()
 
@@ -13,19 +17,32 @@ router = APIRouter()
 async def ats_check(
     resume_pdf: UploadFile = File(...),
     job_description: str = Form(...),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
+    if not can_use_feature(current_user, "ats_check"):
+        raise HTTPException(status_code=403, detail="ATS check limit reached. Upgrade plan or wait for reset.")
     
     resume_text = await extract_text_from_pdf(resume_pdf)
-    return await run_analyze_resume(resume_text, job_description)
+    result =  await run_analyze_resume(resume_text, job_description)
+
+    deduct_feature_usage(current_user, "ats_check")
+    await db.commit()
+    return result
 
 @router.post("/tailor-resume", response_model=TailoredResumeResponse)
 async def tailor_resume_endpoint(
     resume_pdf: UploadFile = File(...),
     job_description: str = Form(...),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    return await tailor_resume(resume_pdf, job_description)
+    if not can_use_feature(current_user, "resume_tailoring"):
+        raise HTTPException(status_code=403, detail="Resume tailoring limit reached. Upgrade plan or wait for reset.")
+    result =  await tailor_resume(resume_pdf, job_description)
+    deduct_feature_usage(current_user, "resume_tailoring")
+    await db.commit()
+    return result
 
 @router.get("/download/{filename}")
 async def download_resume(filename: str):
@@ -33,3 +50,27 @@ async def download_resume(filename: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(file_path, media_type="application/pdf")
+
+@router.get("/usage")
+async def get_usage(current_user: User = Depends(get_current_user)):
+    now = datetime.now(timezone.utc)
+
+    # Calculate reset times
+    next_daily_reset = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    days_until_sunday = (6 - now.weekday()) % 7 or 7
+    next_weekly_reset = (now + timedelta(days=days_until_sunday)).replace(hour=0, minute=0, second=0, microsecond=0)
+    if now.month == 12:
+        next_monthly_reset = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        next_monthly_reset = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
+
+    return {
+        "ats_checks_left_today": current_user.ats_checks_left_today,
+        "resume_tailoring_left_this_week": current_user.resume_tailoring_left_this_week,
+        "mock_interviews_left_this_month": current_user.mock_interviews_left_this_month,
+        "next_reset_times": {
+            "ats_check": next_daily_reset.isoformat(),
+            "resume_tailoring": next_weekly_reset.isoformat(),
+            "mock_interview": next_monthly_reset.isoformat()
+        }
+    }

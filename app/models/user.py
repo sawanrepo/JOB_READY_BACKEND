@@ -1,6 +1,8 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, LargeBinary
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, LargeBinary, ForeignKey
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
+from app.models.subscription import SubscriptionPlan
 
 class User(Base):
     __tablename__ = "users"
@@ -15,3 +17,16 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     google_id = Column(String, unique=True, nullable=True) 
+
+    subscription_id = Column(Integer, ForeignKey("subscription_plans.id"), default=1)
+    subscription = relationship("SubscriptionPlan")
+
+    # 🔢 Usage tracking
+    ats_checks_left_today = Column(Integer, default=1)
+    resume_tailoring_left_this_week = Column(Integer, default=2)
+    mock_interviews_left_this_month = Column(Integer, default=1)
+
+    # 🕒 Timestamps
+    last_ats_check_at = Column(DateTime(timezone=True), nullable=True)
+    last_resume_tailoring_at = Column(DateTime(timezone=True), nullable=True)
+    last_mock_interview_at = Column(DateTime(timezone=True), nullable=True)
