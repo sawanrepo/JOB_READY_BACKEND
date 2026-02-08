@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # Gemini
     GEMINI_API_KEY: str = Field(..., env="GEMINI_API_KEY")
 
+    # Razorpay
+    RAZORPAY_KEY_ID: str = Field(..., env="RAZORPAY_KEY_ID")
+    RAZORPAY_KEY_SECRET: str = Field(..., env="RAZORPAY_KEY_SECRET")
+
     LATEX_PATH: str = Field(default="pdflatex")
     
     class Config:

@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
-from app.routers import auth, resume
+from app.routers import auth, resume, payment
 from app.config import settings
 from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
@@ -30,6 +30,7 @@ app.mount("/resume/download", StaticFiles(directory="output"), name="resume-down
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(resume.router, prefix="/resume", tags=["Resume"])
+app.include_router(payment.router, prefix="/payment", tags=["Payment"])
 
 @app.get("/")
 def root():

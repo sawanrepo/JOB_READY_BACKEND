@@ -11,16 +11,19 @@ from datetime import datetime, timedelta, timezone
 import razorpay
 from app.routers.auth import get_current_user
 
+from app.config import settings
+
 router = APIRouter()
 
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
-RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+RAZORPAY_KEY_ID = settings.RAZORPAY_KEY_ID
+RAZORPAY_KEY_SECRET = settings.RAZORPAY_KEY_SECRET
 
 client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
 PLAN_PRICES = {
     "pro": {"amount": 21900, "plan_id": 2},       # ₹219
-    "pro_plus": {"amount": 42900, "plan_id": 3}   # ₹429
+    "pro_plus": {"amount": 42900, "plan_id": 3},  # ₹429
+    "one_time": {"amount": 2000, "plan_id": 0}    # ₹20 for 1 check
 }
 
 @router.post("/create-order/{plan}")
@@ -39,7 +42,8 @@ async def create_order(plan: str, current_user: User = Depends(get_current_user)
         "order_id": order["id"],
         "key": RAZORPAY_KEY_ID,
         "amount": PLAN_PRICES[plan]["amount"],
-        "plan": plan
+        "plan": plan,
+        "notes": order["notes"]
     }
 
 
@@ -55,23 +59,44 @@ async def verify_payment(
     user_id = payload.get("user_id")
     plan_name = payload.get("plan_name")
 
+    print(f"[DEBUG] Payment verification payload: {payload}")
+
     if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature, user_id, plan_name]):
+        print("[ERROR] Missing payment data")
         raise HTTPException(status_code=400, detail="Missing payment data")
 
     # Verify signature
+    msg = f"{razorpay_order_id}|{razorpay_payment_id}"
+    print(f"[DEBUG] Signing message: {msg}")
+    
     generated_signature = hmac.new(
-        bytes(RAZORPAY_SECRET, "utf-8"),
-        bytes(f"{razorpay_order_id}|{razorpay_payment_id}", "utf-8"),
+        bytes(RAZORPAY_KEY_SECRET, "utf-8"),
+        bytes(msg, "utf-8"),
         hashlib.sha256,
     ).hexdigest()
+    
+    print(f"[DEBUG] Received signature: {razorpay_signature}")
+    print(f"[DEBUG] Generated signature: {generated_signature}")
 
     if generated_signature != razorpay_signature:
+        print("[ERROR] Signature mismatch")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
     # Update user subscription
-    user = await db.get(User, user_id)
+    try:
+        user_id_int = int(user_id)
+        user = await db.get(User, user_id_int)
+    except ValueError:
+        print("[ERROR] Invalid user_id format")
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if plan_name == "one_time":
+        user.ats_checks_left_today += 1
+        await db.commit()
+        return JSONResponse(content={"message": "One-time check added"})
 
     plan = await db.execute(
         SubscriptionPlan.__table__.select().where(SubscriptionPlan.name == plan_name)
