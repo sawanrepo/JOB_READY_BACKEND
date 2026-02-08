@@ -13,3 +13,6 @@ __pycache__/
 output/
 temp_tex/
 venv/
+test_output.tex
+test_template.py
+reset_usage_local.py

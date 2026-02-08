@@ -4,16 +4,44 @@ from app.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import User
 from app.models.subscription import SubscriptionPlan
-from app.routers.auth import get_current_user_optional
-import razorpay
 import hmac
 import hashlib
 import os
 from datetime import datetime, timedelta, timezone
+import razorpay
+from app.routers.auth import get_current_user
 
 router = APIRouter()
 
-RAZORPAY_SECRET = os.getenv("RAZORPAY_SECRET")
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+
+client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
+PLAN_PRICES = {
+    "pro": {"amount": 21900, "plan_id": 2},       # ₹219
+    "pro_plus": {"amount": 42900, "plan_id": 3}   # ₹429
+}
+
+@router.post("/create-order/{plan}")
+async def create_order(plan: str, current_user: User = Depends(get_current_user)):
+    if plan not in PLAN_PRICES:
+        raise HTTPException(status_code=400, detail="Invalid plan")
+
+    order = client.order.create({
+        "amount": PLAN_PRICES[plan]["amount"],
+        "currency": "INR",
+        "payment_capture": 1,
+        "notes": {"user_id": str(current_user.id)}
+    })
+
+    return {
+        "order_id": order["id"],
+        "key": RAZORPAY_KEY_ID,
+        "amount": PLAN_PRICES[plan]["amount"],
+        "plan": plan
+    }
+
 
 @router.post("/payment/verify")
 async def verify_payment(

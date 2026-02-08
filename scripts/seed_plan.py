@@ -3,7 +3,7 @@ from sqlalchemy import create_engine
 from app.models.subscription import SubscriptionPlan
 from app.config import settings
 
-# 🔄 Convert asyncpg to psycopg2
+#  Convert asyncpg to psycopg2
 DATABASE_URL = settings.DATABASE_URL.replace("postgresql+asyncpg", "postgresql+psycopg2")
 
 engine = create_engine(DATABASE_URL)
