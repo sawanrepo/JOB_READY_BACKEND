@@ -106,7 +106,7 @@ class InterviewService:
         # Note: google-genai 1.x aio.files.upload might not be fully async in all versions, 
         # using run_in_executor for the file upload if needed, but keeping it direct for MVP.
         logger.info(f"Uploading video {video_path} to Gemini...")
-        video_file = self.client.files.upload(path=video_path)
+        video_file = self.client.files.upload(file=video_path)
         
         # Wait for processing
         while True:
