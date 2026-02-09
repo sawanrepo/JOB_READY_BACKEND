@@ -23,7 +23,8 @@ client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 PLAN_PRICES = {
     "pro": {"amount": 21900, "plan_id": 2},       # ₹219
     "pro_plus": {"amount": 42900, "plan_id": 3},  # ₹429
-    "one_time": {"amount": 2000, "plan_id": 0}    # ₹20 for 1 check
+    "one_time": {"amount": 2000, "plan_id": 0},    # ₹20 for 1 check
+    "mock_interview_one_time": {"amount": 5000, "plan_id": 0}  # ₹50 for 1 mock interview
 }
 
 @router.post("/create-order/{plan}")
@@ -97,6 +98,11 @@ async def verify_payment(
         user.ats_checks_left_today += 1
         await db.commit()
         return JSONResponse(content={"message": "One-time check added"})
+
+    if plan_name == "mock_interview_one_time":
+        user.mock_interviews_left_this_month += 1
+        await db.commit()
+        return JSONResponse(content={"message": "One-time mock interview added"})
 
     plan = await db.execute(
         SubscriptionPlan.__table__.select().where(SubscriptionPlan.name == plan_name)

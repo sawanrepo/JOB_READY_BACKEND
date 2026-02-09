@@ -9,7 +9,7 @@ class InterviewResponse(BaseModel):
     session_id: str
     question: str
     question_number: int
-    total_questions: int = 15
+    total_questions: int = 8
     interview_ended: bool = False
 
 class InterviewResult(BaseModel):

@@ -36,7 +36,7 @@ class InterviewService:
             session_id=session_id,
             question=question,
             question_number=1,
-            total_questions=15
+            total_questions=8
         )
 
     async def process_response(self, session_id: str, video_path: str) -> InterviewResponse:
@@ -69,7 +69,7 @@ class InterviewService:
             session_id=session_id,
             question=next_q if not ended else "",
             question_number=session["question_number"],
-            total_questions=15,
+            total_questions=8,
             interview_ended=ended
         )
 
@@ -77,14 +77,14 @@ class InterviewService:
         session = interview_sessions[session_id]
         session["question_number"] += 1
         
-        if session["question_number"] > 15:
+        if session["question_number"] > 8:
             return "INTERVIEW_END"
 
         # Construct prompt
         history_text = "\n".join([f"Q: {h['question']}\nSearch: {h['analysis']}" for h in session["history"]])
         prompt = INTERVIEW_SYSTEM_PROMPT.format(
             question_number=session["question_number"],
-            total_questions=15,
+            total_questions=8,
             last_question=session["current_question"] if session["current_question"] else "None (Start of Interview)",
             resume_summary=session["resume_text"][:800] + "..." if len(session["resume_text"]) > 800 else session["resume_text"],
             jd_summary=session["job_description"][:800] + "..." if len(session["job_description"]) > 800 else session["job_description"],

@@ -1,6 +1,12 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Form
 from app.schemas.interview import InterviewStartRequest, InterviewResponse, InterviewResult
 from app.services.interview_service import InterviewService
+from app.utils.auth import get_current_user
+from app.utils.usage import can_use_feature, deduct_feature_usage
+from app.models.user import User
+from app.database import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Depends, APIRouter, UploadFile, File, HTTPException, Form
+from datetime import datetime, timezone
 import shutil
 import os
 import logging
@@ -18,13 +24,26 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 @router.post("/start", response_model=InterviewResponse)
 async def start_interview(
     resume_pdf: UploadFile = File(...),
-    job_description: str = Form(...)
+    job_description: str = Form(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     try:
+        # Check usage
+        if not can_use_feature(current_user, "mock_interview"):
+            raise HTTPException(status_code=403, detail="Mock interview limit reached. Please upgrade or wait for reset.")
+
         resume_text = await extract_text_from_pdf(resume_pdf)
         from app.schemas.interview import InterviewStartRequest
         request = InterviewStartRequest(resume_text=resume_text, job_description=job_description)
+        
+        # Deduct usage
+        deduct_feature_usage(current_user, "mock_interview")
+        await db.commit()
+        
         return await interview_service.start_interview(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error starting interview: {e}")
         raise HTTPException(status_code=500, detail=str(e))
