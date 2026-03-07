@@ -81,7 +81,7 @@ class InterviewService:
             return "INTERVIEW_END"
 
         # Construct prompt
-        history_text = "\n".join([f"Q: {h['question']}\nSearch: {h['analysis']}" for h in session["history"]])
+        history_text = "\n".join([f"Q: {h['question']}\nAnalysis: {h['analysis']}" for h in session["history"]])
         prompt = INTERVIEW_SYSTEM_PROMPT.format(
             question_number=session["question_number"],
             total_questions=8,
@@ -91,10 +91,15 @@ class InterviewService:
             history=history_text if history_text else "None"
         )
         
-        response = await self.client.aio.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
+        try:
+            response = await self.client.aio.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt
+            )
+            logger.info("Received response from Gemini.")
+        except Exception as e:
+            logger.error(f"Error during generate_content: {e}")
+            raise
         next_q = response.text.strip()
         
         session["current_question"] = next_q
@@ -143,19 +148,14 @@ class InterviewService:
         
         response = await self.client.aio.models.generate_content(
             model='gemini-2.5-flash',
-            contents=prompt
+            contents=prompt,
+            config={"response_mime_type": "application/json"}
         )
         content = response.text
         
-        # Cleanup
         try:
-            if content.startswith("```json"):
-                content = content[7:-3].strip()
-            elif content.startswith("```"):
-                content = content[3:-3].strip()
-                
             return json.loads(content)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse report JSON: {e}")
-            # Fallback or retry logic could go here
+            logger.error(f"Raw content: {content}")
             raise ValueError("Failed to generate valid report JSON")

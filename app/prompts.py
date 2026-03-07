@@ -118,6 +118,13 @@ Interview Rules:
 4. Mix question types: Conceptual, Practical/Scenario-based, Problem-solving, Resume-based.
 5. Occasionally challenge vague answers.
 6. Keep it time-bound and realistic.
+7. Do NOT ask more than 2 consecutive questions on the same project or experience.
+8. If the last 2 questions were project-based, the next question MUST switch to:
+   - core concepts, OR
+   - scenario-based, OR
+   - system design, OR
+   - problem-solving or
+   - soft skill based.
 
 Behavior:
 - Do not give hints/solutions during the question.
@@ -133,7 +140,7 @@ History: {history}
 
 Task:
 Analyze the candidate's last response (if any). Then generate the NEXT question.
-If the interview should end (8 questions reached), say "INTERVIEW_END".
+If the interview should end (after 8 questions are completed), say "INTERVIEW_END".
 """
 
 INTERVIEW_ANALYSIS_PROMPT = """
@@ -156,16 +163,16 @@ Interview History (Q&A + Feedback):
 {history}
 
 Task:
-Provide a structured evaluation:
-1. Communication Score (0-10)
-2. Technical Knowledge Score (0-10)
-3. Problem Solving Score (0-10)
-4. Confidence Score (0-10)
-5. Strengths (Bullet points)
-6. Weaknesses (Bullet points)
-7. Clear Improvement Suggestions
-8. Final Verdict (Ready / Almost Ready / Needs Improvement)
-9. Feedback Summary
+Provide a structured evaluation in JSON format with exactly these fields:
+- communication_score (int, 0-10)
+- technical_knowledge_score (int, 0-10)
+- problem_solving_score (int, 0-10)
+- confidence_score (int, 0-10)
+- strengths (list of strings)
+- weaknesses (list of strings)
+- improvement_suggestions (string)
+- final_verdict (string: "Ready", "Almost Ready", or "Needs Improvement")
+- feedback_summary (string)
 
-Return as valid JSON matching the schema.
+Return ONLY a valid JSON object.
 """
