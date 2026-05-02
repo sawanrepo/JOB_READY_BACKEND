@@ -52,17 +52,17 @@ async def create_order(plan: str, current_user: User = Depends(get_current_user)
 async def verify_payment(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     payload = await request.json()
     razorpay_order_id = payload.get("razorpay_order_id")
     razorpay_payment_id = payload.get("razorpay_payment_id")
     razorpay_signature = payload.get("razorpay_signature")
-    user_id = payload.get("user_id")
     plan_name = payload.get("plan_name")
 
     print(f"[DEBUG] Payment verification payload: {payload}")
 
-    if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature, user_id, plan_name]):
+    if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature, plan_name]):
         print("[ERROR] Missing payment data")
         raise HTTPException(status_code=400, detail="Missing payment data")
 
@@ -83,16 +83,8 @@ async def verify_payment(
         print("[ERROR] Signature mismatch")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    # Update user subscription
-    try:
-        user_id_int = int(user_id)
-        user = await db.get(User, user_id_int)
-    except ValueError:
-        print("[ERROR] Invalid user_id format")
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    # Update user subscription - use current_user instead of user_id from payload
+    user = current_user
 
     if plan_name == "one_time":
         user.ats_checks_left_today += 1

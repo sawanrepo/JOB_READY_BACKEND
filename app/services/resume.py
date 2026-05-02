@@ -26,9 +26,10 @@ async def tailor_resume(resume_pdf: UploadFile, job_description: str) -> dict:
         
         # Generate LaTeX and compile to PDF
         print("[DEBUG] Rendering LaTeX template...")
-        latex_content = render_latex_template(tailored_content)
+        import asyncio
+        latex_content = await asyncio.to_thread(render_latex_template, tailored_content)
         print("[DEBUG] Compiling LaTeX to PDF...")
-        pdf_path = compile_latex_to_pdf(latex_content)
+        pdf_path = await asyncio.to_thread(compile_latex_to_pdf, latex_content)
         print("[DEBUG] PDF compiled successfully at:", pdf_path)
         filename = os.path.basename(pdf_path)
         

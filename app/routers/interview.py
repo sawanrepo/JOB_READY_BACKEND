@@ -48,6 +48,8 @@ async def start_interview(
         logger.error(f"Error starting interview: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+import aiofiles
+
 @router.post("/{session_id}/response", response_model=InterviewResponse)
 async def process_response(
     session_id: str,
@@ -55,8 +57,9 @@ async def process_response(
 ):
     temp_path = os.path.join(TEMP_DIR, f"{session_id}_{video.filename}")
     try:
-        with open(temp_path, "wb") as buffer:
-            shutil.copyfileobj(video.file, buffer)
+        async with aiofiles.open(temp_path, "wb") as out_file:
+            content = await video.read()
+            await out_file.write(content)
             
         logger.info(f"Saved video to {temp_path}")
         response = await interview_service.process_response(session_id, temp_path)

@@ -106,16 +106,13 @@ class InterviewService:
         return next_q
 
     async def _analyze_video(self, video_path: str, question: str) -> str:
-        # Upload file using synchronous client as files.upload is typically fast for small files 
-        # but better to run in executor or use aio if available.
-        # Note: google-genai 1.x aio.files.upload might not be fully async in all versions, 
-        # using run_in_executor for the file upload if needed, but keeping it direct for MVP.
+        # Upload file using thread pool to avoid blocking the event loop
         logger.info(f"Uploading video {video_path} to Gemini...")
-        video_file = self.client.files.upload(file=video_path)
+        video_file = await asyncio.to_thread(self.client.files.upload, file=video_path)
         
         # Wait for processing
         while True:
-             file = self.client.files.get(name=video_file.name)
+             file = await asyncio.to_thread(self.client.files.get, name=video_file.name)
              if file.state != 'PROCESSING':
                  break
              logger.info("Waiting for video processing...")
