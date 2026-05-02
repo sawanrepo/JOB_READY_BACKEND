@@ -11,10 +11,16 @@ from app.utils.security import (
 )
 from app.schemas.auth import Token
 from fastapi import HTTPException, status
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 from app.config import settings
 import httpx
 from jose import JWTError
+import random
+import string
+from app.utils.email import send_otp_email
+
+def generate_otp(length=6):
+    return ''.join(random.choices(string.digits, k=length))
 
 async def authenticate_user(email: str, password: str, db) -> User:
     result = await db.execute(select(User).where(User.email == email))
@@ -24,6 +30,12 @@ async def authenticate_user(email: str, password: str, db) -> User:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
+        )
+    
+    if not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Email not verified. Please verify your email first.",
         )
     
     if not user.is_active:
@@ -36,23 +48,98 @@ async def authenticate_user(email: str, password: str, db) -> User:
 
 async def create_user(email: str, password: str, full_name: str, db) -> User:
     result = await db.execute(select(User).where(User.email == email))
-    if result.scalars().first():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered",
-        )
+    user = result.scalars().first()
     
+    otp = generate_otp()
     hashed_password = get_password_hash(password)
-    user = User(
-        email=email,
-        hashed_password=hashed_password,
-        full_name=full_name,
-        is_active=True
-    )
-    db.add(user)
+    
+    if user:
+        if user.is_verified:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered",
+            )
+        else:
+            # Overwrite unverified user
+            user.hashed_password = hashed_password
+            user.full_name = full_name
+            user.otp = otp
+            user.otp_created_at = datetime.now(timezone.utc)
+    else:
+        user = User(
+            email=email,
+            hashed_password=hashed_password,
+            full_name=full_name,
+            is_active=True,
+            is_verified=False,
+            otp=otp,
+            otp_created_at=datetime.now(timezone.utc)
+        )
+        db.add(user)
+        
     await db.commit()
     await db.refresh(user)
+    
+    # Send OTP email
+    # It's better to run this in a background task in the router, 
+    # but for simplicity, we do it here synchronously or in a separate thread.
+    # We will just call the function.
+    send_otp_email(email, otp)
+    
     return user
+
+async def verify_otp(email: str, otp: str, db) -> User:
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalars().first()
+    
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        
+    if user.is_verified:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already verified")
+        
+    if user.otp != otp:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
+        
+    if not user.otp_created_at:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired or invalid")
+        
+    # Check if OTP is expired (15 minutes)
+    time_diff = datetime.now(timezone.utc) - user.otp_created_at
+    if time_diff > timedelta(minutes=15):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification code has expired")
+        
+    # Mark user as verified
+    user.is_verified = True
+    user.otp = None
+    user.otp_created_at = None
+    await db.commit()
+    await db.refresh(user)
+    
+    return user
+
+async def resend_otp(email: str, db) -> None:
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalars().first()
+    
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        
+    if user.is_verified:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already verified")
+        
+    # Check 2-minute cooldown
+    if user.otp_created_at:
+        time_diff = datetime.now(timezone.utc) - user.otp_created_at
+        if time_diff < timedelta(minutes=2):
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Please wait 2 minutes before requesting a new code")
+            
+    otp = generate_otp()
+    user.otp = otp
+    user.otp_created_at = datetime.now(timezone.utc)
+    await db.commit()
+    
+    send_otp_email(email, otp)
 
 async def handle_google_oauth(code: str, db) -> User:
     token_url = "https://oauth2.googleapis.com/token"

@@ -6,14 +6,18 @@ from app.schemas.auth import (
     Token, 
     UserCreate, 
     GoogleAuthRequest,
-    SetPasswordRequest
+    SetPasswordRequest,
+    VerifyOTPRequest,
+    ResendOTPRequest
 )
 from app.services.auth import (
     authenticate_user,
     create_user,
     handle_google_oauth,
     refresh_access_token,
-    set_user_password
+    set_user_password,
+    verify_otp,
+    resend_otp
 )
 from app.utils.security import create_access_token, create_refresh_token
 from app.config import settings
@@ -23,14 +27,20 @@ from app.models.user import User
 
 router = APIRouter()
 
-@router.post("/register", response_model=Token)
+@router.post("/register")
 async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
-    user = await create_user(
+    await create_user(
         email=user_data.email,
         password=user_data.password,
         full_name=user_data.full_name,
         db=db
     )
+    
+    return {"message": "OTP sent successfully to your email"}
+
+@router.post("/verify-otp", response_model=Token)
+async def verify_otp_endpoint(request: VerifyOTPRequest, db: AsyncSession = Depends(get_db)):
+    user = await verify_otp(request.email, request.otp, db)
     
     access_token = create_access_token(
         data={"sub": user.email},
@@ -43,6 +53,11 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
         "token_type": "bearer",
         "refresh_token": refresh_token
     }
+
+@router.post("/resend-otp")
+async def resend_otp_endpoint(request: ResendOTPRequest, db: AsyncSession = Depends(get_db)):
+    await resend_otp(request.email, db)
+    return {"message": "A new OTP has been sent to your email"}
 
 @router.post("/login", response_model=Token)
 async def login(

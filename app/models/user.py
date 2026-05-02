@@ -17,6 +17,8 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     google_id = Column(String, unique=True, nullable=True) 
+    otp = Column(String, nullable=True)
+    otp_created_at = Column(DateTime(timezone=True), nullable=True)
 
     subscription_id = Column(Integer, ForeignKey("subscription_plans.id"), default=1)
     subscription = relationship("SubscriptionPlan")
