@@ -8,7 +8,9 @@ from app.schemas.auth import (
     GoogleAuthRequest,
     SetPasswordRequest,
     VerifyOTPRequest,
-    ResendOTPRequest
+    ResendOTPRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest
 )
 from app.services.auth import (
     authenticate_user,
@@ -17,7 +19,9 @@ from app.services.auth import (
     refresh_access_token,
     set_user_password,
     verify_otp,
-    resend_otp
+    resend_otp,
+    forgot_password,
+    reset_password
 )
 from app.utils.security import create_access_token, create_refresh_token
 from app.config import settings
@@ -58,6 +62,16 @@ async def verify_otp_endpoint(request: VerifyOTPRequest, db: AsyncSession = Depe
 async def resend_otp_endpoint(request: ResendOTPRequest, db: AsyncSession = Depends(get_db)):
     await resend_otp(request.email, db)
     return {"message": "A new OTP has been sent to your email"}
+
+@router.post("/forgot-password")
+async def forgot_password_endpoint(request: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+    await forgot_password(request.email, db)
+    return {"message": "If that email exists, a password reset code has been sent."}
+
+@router.post("/reset-password")
+async def reset_password_endpoint(request: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+    await reset_password(request.email, request.otp, request.new_password, db)
+    return {"message": "Password has been successfully reset. You can now log in."}
 
 @router.post("/login", response_model=Token)
 async def login(

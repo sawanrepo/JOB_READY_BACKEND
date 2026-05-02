@@ -17,7 +17,7 @@ import httpx
 from jose import JWTError
 import random
 import string
-from app.utils.email import send_otp_email
+from app.utils.email import send_otp_email, send_password_reset_email
 
 def generate_otp(length=6):
     return ''.join(random.choices(string.digits, k=length))
@@ -140,6 +140,54 @@ async def resend_otp(email: str, db) -> None:
     await db.commit()
     
     send_otp_email(email, otp)
+
+async def forgot_password(email: str, db) -> None:
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalars().first()
+    
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        
+    if user.is_google_oauth and not user.hashed_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This account uses Google Login. Please log in with Google.")
+        
+    # Check 2-minute cooldown
+    if user.otp_created_at:
+        time_diff = datetime.now(timezone.utc) - user.otp_created_at
+        if time_diff < timedelta(minutes=2):
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Please wait 2 minutes before requesting a new code")
+            
+    otp = generate_otp()
+    user.otp = otp
+    user.otp_created_at = datetime.now(timezone.utc)
+    await db.commit()
+    
+    send_password_reset_email(email, otp)
+
+async def reset_password(email: str, otp: str, new_password: str, db) -> None:
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalars().first()
+    
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        
+    if user.otp != otp:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid reset code")
+        
+    if not user.otp_created_at:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Code expired or invalid")
+        
+    # Check if OTP is expired (15 minutes)
+    time_diff = datetime.now(timezone.utc) - user.otp_created_at
+    if time_diff > timedelta(minutes=15):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset code has expired")
+        
+    # Mark user as verified (in case they forgot password before verifying email)
+    user.is_verified = True
+    user.hashed_password = get_password_hash(new_password)
+    user.otp = None
+    user.otp_created_at = None
+    await db.commit()
 
 async def handle_google_oauth(code: str, db) -> User:
     token_url = "https://oauth2.googleapis.com/token"
