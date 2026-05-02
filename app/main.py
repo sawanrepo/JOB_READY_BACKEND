@@ -6,6 +6,11 @@ from app.routers import auth, resume, payment, interview
 from app.config import settings
 from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from app.utils.limiter import limiter
+from fastapi.responses import JSONResponse
+from fastapi import Request
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +30,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Rate Limiting
+app.state.limiter = limiter
+
+def custom_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={"detail": f"Rate limit exceeded: {exc.detail}"}
+    )
+
+app.add_exception_handler(RateLimitExceeded, custom_rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 app.mount("/resume/download", StaticFiles(directory="output"), name="resume-download")
 # Include routers

@@ -5,11 +5,12 @@ from app.utils.usage import can_use_feature, deduct_feature_usage
 from app.models.user import User
 from app.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import Depends, APIRouter, UploadFile, File, HTTPException, Form
+from fastapi import Depends, APIRouter, UploadFile, File, HTTPException, Form, Request
 from datetime import datetime, timezone
 import shutil
 import os
 import logging
+from app.utils.limiter import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,9 @@ TEMP_DIR = "temp_videos"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 @router.post("/start", response_model=InterviewResponse)
+@limiter.limit("5/minute")
 async def start_interview(
+    request: Request,
     resume_pdf: UploadFile = File(...),
     job_description: str = Form(...),
     current_user: User = Depends(get_current_user),
@@ -51,7 +54,9 @@ async def start_interview(
 import aiofiles
 
 @router.post("/{session_id}/response", response_model=InterviewResponse)
+@limiter.limit("10/minute")
 async def process_response(
+    request: Request,
     session_id: str,
     video: UploadFile = File(...)
 ):
@@ -75,7 +80,8 @@ async def process_response(
             os.remove(temp_path)
 
 @router.get("/{session_id}/result", response_model=InterviewResult)
-async def get_result(session_id: str):
+@limiter.limit("5/minute")
+async def get_result(request: Request, session_id: str):
     try:
         return await interview_service.generate_result(session_id)
     except ValueError as e:

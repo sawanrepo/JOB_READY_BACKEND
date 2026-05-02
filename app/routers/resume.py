@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 from app.schemas.resume import ResumeAnalysisResponse, TailoredResumeResponse
 from app.services.resume import run_analyze_resume, tailor_resume
 from app.routers.auth import get_current_user
@@ -10,11 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.utils.usage import can_use_feature, deduct_feature_usage
 from datetime import datetime, timedelta, timezone
+from app.utils.limiter import limiter
 
 router = APIRouter()
 
 @router.post("/ats-check", response_model=ResumeAnalysisResponse)
+@limiter.limit("5/minute")
 async def ats_check(
+    request: Request,
     resume_pdf: UploadFile = File(...),
     job_description: str = Form(...),
     current_user: User = Depends(get_current_user),
@@ -31,7 +34,9 @@ async def ats_check(
     return result
 
 @router.post("/tailor-resume", response_model=TailoredResumeResponse)
+@limiter.limit("5/minute")
 async def tailor_resume_endpoint(
+    request: Request,
     resume_pdf: UploadFile = File(...),
     job_description: str = Form(...),
     current_user: User = Depends(get_current_user),

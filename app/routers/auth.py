@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -28,11 +28,13 @@ from app.config import settings
 from datetime import timedelta
 from app.utils.auth import get_current_user
 from app.models.user import User
+from app.utils.limiter import limiter
 
 router = APIRouter()
 
 @router.post("/register")
-async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
+@limiter.limit("3/minute")
+async def register(request: Request, user_data: UserCreate, db: AsyncSession = Depends(get_db)):
     await create_user(
         email=user_data.email,
         password=user_data.password,
@@ -59,22 +61,27 @@ async def verify_otp_endpoint(request: VerifyOTPRequest, db: AsyncSession = Depe
     }
 
 @router.post("/resend-otp")
-async def resend_otp_endpoint(request: ResendOTPRequest, db: AsyncSession = Depends(get_db)):
-    await resend_otp(request.email, db)
+@limiter.limit("3/minute")
+async def resend_otp_endpoint(request: Request, body: ResendOTPRequest, db: AsyncSession = Depends(get_db)):
+    await resend_otp(body.email, db)
     return {"message": "A new OTP has been sent to your email"}
 
 @router.post("/forgot-password")
-async def forgot_password_endpoint(request: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
-    await forgot_password(request.email, db)
+@limiter.limit("3/minute")
+async def forgot_password_endpoint(request: Request, body: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+    await forgot_password(body.email, db)
     return {"message": "If that email exists, a password reset code has been sent."}
 
 @router.post("/reset-password")
-async def reset_password_endpoint(request: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
-    await reset_password(request.email, request.otp, request.new_password, db)
+@limiter.limit("5/minute")
+async def reset_password_endpoint(request: Request, body: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+    await reset_password(body.email, body.otp, body.new_password, db)
     return {"message": "Password has been successfully reset. You can now log in."}
 
 @router.post("/login", response_model=Token)
+@limiter.limit("5/minute")
 async def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
