@@ -189,6 +189,29 @@ async def reset_password(email: str, otp: str, new_password: str, db) -> None:
     user.otp_created_at = None
     await db.commit()
 
+async def update_profile(user: User, full_name: str, db) -> User:
+    if full_name:
+        user.full_name = full_name
+        await db.commit()
+    return user
+
+async def change_password(user: User, current_password: str, new_password: str, db) -> User:
+    if user.is_google_oauth and not user.hashed_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="You signed up with Google. Please use Google to log in."
+        )
+        
+    if not verify_password(current_password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Incorrect current password."
+        )
+        
+    user.hashed_password = get_password_hash(new_password)
+    await db.commit()
+    return user
+
 async def handle_google_oauth(code: str, db) -> User:
     token_url = "https://oauth2.googleapis.com/token"
     user_info_url = "https://www.googleapis.com/oauth2/v3/userinfo"

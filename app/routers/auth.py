@@ -10,7 +10,10 @@ from app.schemas.auth import (
     VerifyOTPRequest,
     ResendOTPRequest,
     ForgotPasswordRequest,
-    ResetPasswordRequest
+    ResetPasswordRequest,
+    UpdateProfileRequest,
+    ChangePasswordRequest,
+    UserOut
 )
 from app.services.auth import (
     authenticate_user,
@@ -21,7 +24,9 @@ from app.services.auth import (
     verify_otp,
     resend_otp,
     forgot_password,
-    reset_password
+    reset_password,
+    update_profile,
+    change_password
 )
 from app.utils.security import create_access_token, create_refresh_token
 from app.config import settings
@@ -57,7 +62,10 @@ async def verify_otp_endpoint(request: VerifyOTPRequest, db: AsyncSession = Depe
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "refresh_token": refresh_token
+        "refresh_token": refresh_token,
+        "user_id": user.id,
+        "full_name": user.full_name,
+        "email": user.email
     }
 
 @router.post("/resend-otp")
@@ -78,6 +86,27 @@ async def reset_password_endpoint(request: Request, body: ResetPasswordRequest, 
     await reset_password(body.email, body.otp, body.new_password, db)
     return {"message": "Password has been successfully reset. You can now log in."}
 
+@router.get("/me", response_model=UserOut)
+async def get_me(current_user: User = Depends(get_current_user)):
+    return current_user
+
+@router.patch("/me", response_model=UserOut)
+async def update_me(
+    request: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    return await update_profile(current_user, request.full_name, db)
+
+@router.post("/change-password")
+async def change_password_endpoint(
+    request: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    await change_password(current_user, request.current_password, request.new_password, db)
+    return {"message": "Password changed successfully"}
+
 @router.post("/login", response_model=Token)
 @limiter.limit("5/minute")
 async def login(
@@ -96,7 +125,10 @@ async def login(
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "refresh_token": refresh_token
+        "refresh_token": refresh_token,
+        "user_id": user.id,
+        "full_name": user.full_name,
+        "email": user.email
     }
 
 @router.post("/google-auth", response_model=Token)
@@ -115,7 +147,10 @@ async def google_auth(
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "refresh_token": refresh_token
+        "refresh_token": refresh_token,
+        "user_id": user.id,
+        "full_name": user.full_name,
+        "email": user.email
     }
 
 @router.post("/refresh", response_model=Token)
