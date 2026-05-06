@@ -6,12 +6,13 @@ from app.models.user import User
 from app.models.subscription import SubscriptionPlan
 import hmac
 import hashlib
-import os
+import logging
 from datetime import datetime, timedelta, timezone
 import razorpay
 from app.routers.auth import get_current_user
-
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -21,11 +22,12 @@ RAZORPAY_KEY_SECRET = settings.RAZORPAY_KEY_SECRET
 client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
 PLAN_PRICES = {
-    "pro": {"amount": 21900, "plan_id": 2},       # ₹219
-    "pro_plus": {"amount": 42900, "plan_id": 3},  # ₹429
-    "one_time": {"amount": 2000, "plan_id": 0},    # ₹20 for 1 check
+    "pro": {"amount": 21900, "plan_id": 2},               # ₹219
+    "pro_plus": {"amount": 42900, "plan_id": 3},           # ₹429
+    "one_time": {"amount": 2000, "plan_id": 0},            # ₹20 for 1 check
     "mock_interview_one_time": {"amount": 5000, "plan_id": 0}  # ₹50 for 1 mock interview
 }
+
 
 @router.post("/create-order/{plan}")
 async def create_order(plan: str, current_user: User = Depends(get_current_user)):
@@ -60,30 +62,21 @@ async def verify_payment(
     razorpay_signature = payload.get("razorpay_signature")
     plan_name = payload.get("plan_name")
 
-    print(f"[DEBUG] Payment verification payload: {payload}")
-
     if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature, plan_name]):
-        print("[ERROR] Missing payment data")
         raise HTTPException(status_code=400, detail="Missing payment data")
 
-    # Verify signature
+    # Fix #6: use constant-time comparison to prevent HMAC timing attack
     msg = f"{razorpay_order_id}|{razorpay_payment_id}"
-    print(f"[DEBUG] Signing message: {msg}")
-    
     generated_signature = hmac.new(
         bytes(RAZORPAY_KEY_SECRET, "utf-8"),
         bytes(msg, "utf-8"),
         hashlib.sha256,
     ).hexdigest()
-    
-    print(f"[DEBUG] Received signature: {razorpay_signature}")
-    print(f"[DEBUG] Generated signature: {generated_signature}")
 
-    if generated_signature != razorpay_signature:
-        print("[ERROR] Signature mismatch")
+    if not hmac.compare_digest(generated_signature, razorpay_signature):
+        logger.warning("Payment signature mismatch for order %s", razorpay_order_id)
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    # Update user subscription - use current_user instead of user_id from payload
     user = current_user
 
     if plan_name == "one_time":
@@ -103,14 +96,22 @@ async def verify_payment(
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
 
-    if user.subscription_id != 1:
+    # Fix #13: also allow re-subscription if current plan is expired
+    now = datetime.now(timezone.utc)
+    plan_is_active = (
+        user.subscription_id != 1
+        and user.subscription_expires_at is not None
+        and user.subscription_expires_at > now
+    )
+    if plan_is_active:
         return JSONResponse(content={"message": "User already has an active plan."})
 
     user.subscription_id = plan.id
-    user.subscription_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    user.subscription_expires_at = now + timedelta(days=30)
     user.ats_checks_left_today = plan.max_ats_checks
     user.resume_tailoring_left_this_week = plan.max_resume_tailoring
     user.mock_interviews_left_this_month = plan.max_mock_interviews
     await db.commit()
 
+    logger.info("Subscription activated for user %s: plan=%s", user.id, plan_name)
     return JSONResponse(content={"message": "Subscription activated"})

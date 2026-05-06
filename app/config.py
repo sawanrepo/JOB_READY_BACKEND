@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from pydantic import AnyHttpUrl, EmailStr, Field
+from pydantic import AnyHttpUrl, EmailStr, Field, field_validator
 from typing import List, Optional
 
 class Settings(BaseSettings):
@@ -34,7 +34,14 @@ class Settings(BaseSettings):
     RAZORPAY_KEY_SECRET: str = Field(..., env="RAZORPAY_KEY_SECRET")
 
     LATEX_PATH: str = Field(default="pdflatex")
-    
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def secret_key_must_be_strong(cls, v: str) -> str:
+        if len(v) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters long for security")
+        return v
+
     class Config:
         env_file = ".env"
         case_sensitive = True

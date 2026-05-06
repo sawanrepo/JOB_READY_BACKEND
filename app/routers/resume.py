@@ -5,6 +5,7 @@ from app.routers.auth import get_current_user
 from app.models.user import User
 from app.utils.file import extract_text_from_pdf
 import os
+from pathlib import Path
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -49,12 +50,20 @@ async def tailor_resume_endpoint(
     await db.commit()
     return result
 
+OUTPUT_DIR = Path("output").resolve()
+
 @router.get("/download/{filename}")
-async def download_resume(filename: str):
-    file_path = f"output/{filename}"
-    if not os.path.exists(file_path):
+async def download_resume(
+    filename: str,
+    current_user: User = Depends(get_current_user),  # Fix #1: require authentication
+):
+    # Fix #1: prevent path traversal by resolving and checking the path stays inside output/
+    safe_path = (OUTPUT_DIR / filename).resolve()
+    if not str(safe_path).startswith(str(OUTPUT_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    if not safe_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path, media_type="application/pdf")
+    return FileResponse(str(safe_path), media_type="application/pdf")
 
 @router.get("/usage")
 async def get_usage(current_user: User = Depends(get_current_user)):

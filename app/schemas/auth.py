@@ -83,7 +83,7 @@ class ResetPasswordRequest(BaseModel):
         return validate_password_complexity(v)
 
 class UpdateProfileRequest(BaseModel):
-    full_name: str = None
+    full_name: str = Field(None, min_length=1, max_length=100)
 
 class ChangePasswordRequest(BaseModel):
     current_password: str

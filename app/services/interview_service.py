@@ -92,13 +92,14 @@ class InterviewService:
         )
         
         try:
+            logger.info(">>> LLM CALL START [_generate_next_question] | Model: %s | Prompt chars: %d", 'gemini-3.1-flash-lite-preview', len(prompt))
             response = await self.client.aio.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.1-flash-lite-preview',
                 contents=prompt
             )
-            logger.info("Received response from Gemini.")
+            logger.info("<<< LLM CALL SUCCESS [_generate_next_question]")
         except Exception as e:
-            logger.error(f"Error during generate_content: {e}")
+            logger.error("!!! LLM CALL FAILED [_generate_next_question]: %s", e, exc_info=True)
             raise
         next_q = response.text.strip()
         
@@ -123,11 +124,17 @@ class InterviewService:
 
         logger.info("Video processed. Generating analysis...")
         prompt = INTERVIEW_ANALYSIS_PROMPT.format(question=question)
-        response = await self.client.aio.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[prompt, file]
-        )
-        return response.text
+        logger.info(">>> LLM CALL START [_analyze_video] | Model: %s | Prompt chars: %d", 'gemini-3.1-flash-lite-preview', len(prompt))
+        try:
+            response = await self.client.aio.models.generate_content(
+                model='gemini-3.1-flash-lite-preview',
+                contents=[prompt, file]
+            )
+            logger.info("<<< LLM CALL SUCCESS [_analyze_video]")
+            return response.text
+        except Exception as e:
+            logger.error("!!! LLM CALL FAILED [_analyze_video]: %s", e, exc_info=True)
+            raise
 
     async def generate_result(self, session_id: str) -> InterviewResult:
         if session_id not in interview_sessions:
@@ -143,16 +150,16 @@ class InterviewService:
             history=history_text
         )
         
-        response = await self.client.aio.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-            config={"response_mime_type": "application/json"}
-        )
-        content = response.text
-        
+        logger.info(">>> LLM CALL START [generate_result] | Model: %s | Prompt chars: %d", 'gemini-3.1-flash-lite-preview', len(prompt))
         try:
+            response = await self.client.aio.models.generate_content(
+                model='gemini-3.1-flash-lite-preview',
+                contents=prompt,
+                config={"response_mime_type": "application/json"}
+            )
+            logger.info("<<< LLM CALL SUCCESS [generate_result]")
+            content = response.text
             return json.loads(content)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse report JSON: {e}")
-            logger.error(f"Raw content: {content}")
+        except Exception as e:
+            logger.error("!!! LLM CALL FAILED [generate_result]: %s", e, exc_info=True)
             raise ValueError("Failed to generate valid report JSON")
