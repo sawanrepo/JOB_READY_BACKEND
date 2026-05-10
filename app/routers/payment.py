@@ -25,7 +25,8 @@ PLAN_PRICES = {
     "pro": {"amount": 21900, "plan_id": 2},               # ₹219
     "pro_plus": {"amount": 42900, "plan_id": 3},           # ₹429
     "one_time": {"amount": 2000, "plan_id": 0},            # ₹20 for 1 check
-    "mock_interview_one_time": {"amount": 5000, "plan_id": 0}  # ₹50 for 1 mock interview
+    "mock_interview_one_time": {"amount": 5000, "plan_id": 0},  # ₹50 for 1 mock interview
+    "audio_interview_one_time": {"amount": 2000, "plan_id": 0}  # ₹20 for 1 audio interview
 }
 
 
@@ -88,6 +89,13 @@ async def verify_payment(
         user.mock_interviews_left_this_month += 1
         await db.commit()
         return JSONResponse(content={"message": "One-time mock interview added"})
+
+    if plan_name == "audio_interview_one_time":
+        if user.audio_interviews_left_this_month is None:
+            user.audio_interviews_left_this_month = 0
+        user.audio_interviews_left_this_month += 1
+        await db.commit()
+        return JSONResponse(content={"message": "One-time audio interview added"})
 
     plan = await db.execute(
         SubscriptionPlan.__table__.select().where(SubscriptionPlan.name == plan_name)

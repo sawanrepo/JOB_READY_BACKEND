@@ -176,3 +176,52 @@ Provide a structured evaluation in JSON format with exactly these fields:
 
 Return ONLY a valid JSON object.
 """
+
+AUDIO_INTERVIEW_QUESTIONS_PROMPT = """
+You are an expert technical interviewer preparing a Rapid Fire Audio Interview.
+Based on the candidate's resume and job description, generate EXACTLY 10 questions to ask the candidate.
+The questions should cover a mix of:
+- Deep technical skills related to the role
+- Projects mentioned in their resume
+- Soft skills and behavioral scenarios
+- Core computer science or domain-specific concepts
+
+Do NOT generate questions that are identical. Keep the questions clear and concise for an audio format.
+
+Candidate Resume Summary: {resume_text}
+Job Description Summary: {job_description}
+
+Return a valid JSON array of strings containing exactly 10 questions.
+Format:
+[
+  "Question 1?",
+  "Question 2?",
+  ...
+]
+"""
+
+AUDIO_INTERVIEW_REPORT_PROMPT = """
+The rapid fire audio interview is complete.
+Candidate Resume: {resume_text}
+Job Description: {job_description}
+
+Below are the 10 questions asked and a single audio file containing the candidate's continuous spoken answers to all 10 questions in order.
+You must carefully listen to the audio file, match the candidate's responses to the 10 questions in sequence, and evaluate their performance.
+
+Questions Asked:
+{questions_json}
+
+Task:
+Provide a structured evaluation in JSON format with exactly these fields:
+- communication_score (int, 0-10)
+- technical_knowledge_score (int, 0-10)
+- problem_solving_score (int, 0-10)
+- confidence_score (int, 0-10)
+- strengths (list of strings)
+- weaknesses (list of strings)
+- improvement_suggestions (string)
+- final_verdict (string: "Ready", "Almost Ready", or "Needs Improvement")
+- feedback_summary (string)
+
+Return ONLY a valid JSON object.
+"""

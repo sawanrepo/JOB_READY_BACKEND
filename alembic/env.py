@@ -5,6 +5,7 @@ import os
 import asyncio
 from dotenv import load_dotenv
 from app.models.user import User
+from app.models.interview import InterviewResult
 from app.database import Base
 
 # For Windows event loop policy

@@ -79,9 +79,10 @@ async def get_usage(current_user: User = Depends(get_current_user)):
         next_monthly_reset = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
 
     return {
-        "ats_checks_left_today": current_user.ats_checks_left_today,
-        "resume_tailoring_left_this_week": current_user.resume_tailoring_left_this_week,
-        "mock_interviews_left_this_month": current_user.mock_interviews_left_this_month,
+        "ats_checks_left_today": current_user.ats_checks_left_today or 0,
+        "resume_tailoring_left_this_week": current_user.resume_tailoring_left_this_week or 0,
+        "mock_interviews_left_this_month": current_user.mock_interviews_left_this_month or 0,
+        "audio_interviews_left_this_month": current_user.audio_interviews_left_this_month or 0,
         "next_reset_times": {
             "ats_check": next_daily_reset.isoformat(),
             "resume_tailoring": next_weekly_reset.isoformat(),

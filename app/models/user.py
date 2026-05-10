@@ -27,6 +27,7 @@ class User(Base):
     ats_checks_left_today = Column(Integer, default=1)
     resume_tailoring_left_this_week = Column(Integer, default=2)
     mock_interviews_left_this_month = Column(Integer, default=1)
+    audio_interviews_left_this_month = Column(Integer, default=0)
 
     # 🕒 Timestamps
     last_ats_check_at = Column(DateTime(timezone=True), nullable=True)

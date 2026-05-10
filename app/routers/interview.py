@@ -3,6 +3,7 @@ from app.services.interview_service import InterviewService
 from app.utils.auth import get_current_user
 from app.utils.usage import can_use_feature, deduct_feature_usage
 from app.models.user import User
+from app.models.interview import InterviewResult as DBInterviewResult
 from app.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Depends, APIRouter, UploadFile, File, HTTPException, Form, Request
@@ -11,6 +12,7 @@ import shutil
 import os
 import uuid
 import logging
+from sqlalchemy import select, desc, delete
 from app.utils.limiter import limiter
 
 logger = logging.getLogger(__name__)
@@ -45,11 +47,13 @@ async def start_interview(
         from app.schemas.interview import InterviewStartRequest
         req = InterviewStartRequest(resume_text=resume_text, job_description=job_description)
 
-        # Deduct usage
+        response = await interview_service.start_interview(req)
+
+        # Deduct usage only if successful
         deduct_feature_usage(current_user, "mock_interview")
         await db.commit()
 
-        return await interview_service.start_interview(req)
+        return response
     except HTTPException:
         raise
     except Exception as e:
@@ -97,6 +101,37 @@ async def process_response(
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+@router.get("/history/latest")
+@limiter.limit("5/minute")
+async def get_latest_history(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        # Fetch latest video
+        video_stmt = select(DBInterviewResult).where(
+            DBInterviewResult.user_id == current_user.id,
+            DBInterviewResult.interview_type == "video"
+        ).order_by(desc(DBInterviewResult.created_at)).limit(1)
+        video_result = (await db.execute(video_stmt)).scalar_one_or_none()
+        
+        # Fetch latest audio
+        audio_stmt = select(DBInterviewResult).where(
+            DBInterviewResult.user_id == current_user.id,
+            DBInterviewResult.interview_type == "audio"
+        ).order_by(desc(DBInterviewResult.created_at)).limit(1)
+        audio_result = (await db.execute(audio_stmt)).scalar_one_or_none()
+        
+        return {
+            "video": video_result.result_data if video_result else None,
+            "audio": audio_result.result_data if audio_result else None
+        }
+    except Exception as e:
+        logger.error(f"Error fetching history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 @router.get("/{session_id}/result", response_model=InterviewResult)
 @limiter.limit("5/minute")
@@ -105,9 +140,28 @@ async def get_result(
     session_id: str,
     # Fix #2: require authenticated user
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     try:
-        return await interview_service.generate_result(session_id)
+        result_data = await interview_service.generate_result(session_id)
+        
+        # Delete previous video results for this user
+        delete_stmt = delete(DBInterviewResult).where(
+            DBInterviewResult.user_id == current_user.id,
+            DBInterviewResult.interview_type == "video"
+        )
+        await db.execute(delete_stmt)
+        
+        # Save to DB
+        db_result = DBInterviewResult(
+            user_id=current_user.id,
+            interview_type="video",
+            result_data=result_data
+        )
+        db.add(db_result)
+        await db.commit()
+        
+        return result_data
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

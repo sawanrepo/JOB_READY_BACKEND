@@ -1,5 +1,5 @@
 import os
-from google import genai
+import google.generativeai as genai
 from app.config import settings
 from app.schemas.interview import InterviewStartRequest, InterviewResponse, InterviewResult
 from app.prompts import INTERVIEW_SYSTEM_PROMPT, INTERVIEW_ANALYSIS_PROMPT, INTERVIEW_REPORT_PROMPT
@@ -14,7 +14,8 @@ interview_sessions = {}
 
 class InterviewService:
     def __init__(self):
-        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        genai.configure(api_key=settings.GEMINI_API_KEY)
+        self.model = genai.GenerativeModel('gemini-2.5-flash')
 
     async def start_interview(self, request: InterviewStartRequest) -> InterviewResponse:
         session_id = os.urandom(4).hex()
@@ -92,11 +93,8 @@ class InterviewService:
         )
         
         try:
-            logger.info(">>> LLM CALL START [_generate_next_question] | Model: %s | Prompt chars: %d", 'gemini-3.1-flash-lite-preview', len(prompt))
-            response = await self.client.aio.models.generate_content(
-                model='gemini-3.1-flash-lite-preview',
-                contents=prompt
-            )
+            logger.info(">>> LLM CALL START [_generate_next_question] | Model: %s | Prompt chars: %d", 'gemini-2.5-flash', len(prompt))
+            response = await self.model.generate_content_async(prompt)
             logger.info("<<< LLM CALL SUCCESS [_generate_next_question]")
         except Exception as e:
             logger.error("!!! LLM CALL FAILED [_generate_next_question]: %s", e, exc_info=True)
@@ -109,26 +107,25 @@ class InterviewService:
     async def _analyze_video(self, video_path: str, question: str) -> str:
         # Upload file using thread pool to avoid blocking the event loop
         logger.info(f"Uploading video {video_path} to Gemini...")
-        video_file = await asyncio.to_thread(self.client.files.upload, file=video_path)
+        video_file = await asyncio.to_thread(genai.upload_file, path=video_path)
         
         # Wait for processing
         while True:
-             file = await asyncio.to_thread(self.client.files.get, name=video_file.name)
-             if file.state != 'PROCESSING':
+             file_info = await asyncio.to_thread(genai.get_file, video_file.name)
+             if file_info.state.name != 'PROCESSING':
                  break
              logger.info("Waiting for video processing...")
              await asyncio.sleep(2)
 
-        if file.state == 'FAILED':
+        if file_info.state.name == 'FAILED':
              raise ValueError("Video processing failed by Gemini")
 
         logger.info("Video processed. Generating analysis...")
         prompt = INTERVIEW_ANALYSIS_PROMPT.format(question=question)
-        logger.info(">>> LLM CALL START [_analyze_video] | Model: %s | Prompt chars: %d", 'gemini-3.1-flash-lite-preview', len(prompt))
+        logger.info(">>> LLM CALL START [_analyze_video] | Model: %s | Prompt chars: %d", 'gemini-2.5-flash', len(prompt))
         try:
-            response = await self.client.aio.models.generate_content(
-                model='gemini-3.1-flash-lite-preview',
-                contents=[prompt, file]
+            response = await self.model.generate_content_async(
+                contents=[prompt, video_file]
             )
             logger.info("<<< LLM CALL SUCCESS [_analyze_video]")
             return response.text
@@ -150,12 +147,12 @@ class InterviewService:
             history=history_text
         )
         
-        logger.info(">>> LLM CALL START [generate_result] | Model: %s | Prompt chars: %d", 'gemini-3.1-flash-lite-preview', len(prompt))
+        logger.info(">>> LLM CALL START [generate_result] | Model: %s | Prompt chars: %d", 'gemini-2.5-flash', len(prompt))
         try:
-            response = await self.client.aio.models.generate_content(
-                model='gemini-3.1-flash-lite-preview',
+            generation_config = {"response_mime_type": "application/json"}
+            response = await self.model.generate_content_async(
                 contents=prompt,
-                config={"response_mime_type": "application/json"}
+                generation_config=generation_config
             )
             logger.info("<<< LLM CALL SUCCESS [generate_result]")
             content = response.text
