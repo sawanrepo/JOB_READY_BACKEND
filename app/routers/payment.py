@@ -81,7 +81,7 @@ async def verify_payment(
     user = current_user
 
     if plan_name == "one_time":
-        user.ats_checks_left_today += 1
+        user.purchased_ats_credits += 1
         await db.commit()
         return JSONResponse(content={"message": "One-time check added"})
 

@@ -26,8 +26,12 @@ class User(Base):
     # 🔢 Usage tracking
     ats_checks_left_today = Column(Integer, default=1)
     resume_tailoring_left_this_week = Column(Integer, default=2)
-    mock_interviews_left_this_month = Column(Integer, default=1)
+    mock_interviews_left_this_month = Column(Integer, default=0)
     audio_interviews_left_this_month = Column(Integer, default=0)
+
+    # 💰 Purchased Credits (Non-expiring)
+    purchased_ats_credits = Column(Integer, default=0)
+    purchased_tailor_credits = Column(Integer, default=0)
 
     # 🕒 Timestamps
     last_ats_check_at = Column(DateTime(timezone=True), nullable=True)

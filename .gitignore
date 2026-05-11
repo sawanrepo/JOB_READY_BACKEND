@@ -17,6 +17,6 @@ test_output.tex
 test_template.py
 reset_usage_local.py
 jobdec.txt
-list_models.py
+list_models.py  
 temp_audios/
 temp_videos/

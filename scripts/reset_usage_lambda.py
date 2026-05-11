@@ -29,8 +29,8 @@ def reset_all_usage():
 
         # Monthly reset (only run if 1st)
         if now.day == 1:
-            user.mock_interviews_left_this_month = user.subscription.max_mock_interviews
-            user.last_mock_interview_at = now
+            # Mock interviews are now persistent and not reset monthly
+            pass
 
     db.commit()
     db.close()
