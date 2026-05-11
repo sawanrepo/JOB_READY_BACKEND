@@ -94,8 +94,12 @@ class InterviewService:
         
         try:
             logger.info(">>> LLM CALL START [_generate_next_question] | Model: %s | Prompt chars: %d", 'gemini-2.5-flash', len(prompt))
-            response = await self.model.generate_content_async(prompt)
+            response = await self.model.generate_content_async(
+                prompt,
+                generation_config={"temperature": 0.8}
+            )
             logger.info("<<< LLM CALL SUCCESS [_generate_next_question]")
+
         except Exception as e:
             logger.error("!!! LLM CALL FAILED [_generate_next_question]: %s", e, exc_info=True)
             raise

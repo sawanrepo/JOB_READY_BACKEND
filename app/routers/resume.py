@@ -12,7 +12,10 @@ from sqlalchemy import select, delete, desc
 from app.database import get_db
 from app.models.resume import ResumeHistory as DBResumeHistory
 from app.utils.usage import can_use_feature, deduct_feature_usage
+from app.utils.validation import validate_job_description, validate_resume_text
+
 from datetime import datetime, timedelta, timezone
+
 from app.utils.limiter import limiter
 
 router = APIRouter()
@@ -30,8 +33,13 @@ async def ats_check(
     if not can_use_feature(current_user, "ats_check"):
         raise HTTPException(status_code=403, detail="ATS check limit reached. Upgrade plan or wait for reset.")
     
+    validate_job_description(job_description)
+
+    
     resume_text = await extract_text_from_pdf(resume_pdf)
+    validate_resume_text(resume_text)
     result =  await run_analyze_resume(resume_text, job_description)
+
 
     deduct_feature_usage(current_user, "ats_check")
     
@@ -63,6 +71,12 @@ async def tailor_resume_endpoint(
 ):
     if not can_use_feature(current_user, "resume_tailoring"):
         raise HTTPException(status_code=403, detail="Resume tailoring limit reached. Upgrade plan or wait for reset.")
+    
+    validate_job_description(job_description)
+    
+    resume_text = await extract_text_from_pdf(resume_pdf)
+    validate_resume_text(resume_text)
+
     result =  await tailor_resume(resume_pdf, job_description)
     deduct_feature_usage(current_user, "resume_tailoring")
     

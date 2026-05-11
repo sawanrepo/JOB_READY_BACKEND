@@ -2,7 +2,10 @@ from app.schemas.interview import InterviewStartRequest, InterviewResult
 from app.services.audio_interview_service import AudioInterviewService
 from app.utils.auth import get_current_user
 from app.utils.usage import can_use_feature, deduct_feature_usage
+from app.utils.validation import validate_job_description, validate_resume_text
+
 from app.models.user import User
+
 from app.models.interview import InterviewResult as DBInterviewResult
 from app.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,8 +42,13 @@ async def start_audio_interview(
         if not can_use_feature(current_user, "audio_interview"):
             raise HTTPException(status_code=403, detail="Audio interview limit reached. Please upgrade or purchase one.")
 
+        validate_job_description(job_description)
+
+
         resume_text = await extract_text_from_pdf(resume_pdf)
+        validate_resume_text(resume_text)
         req = InterviewStartRequest(resume_text=resume_text, job_description=job_description)
+
 
         response = await audio_interview_service.start_audio_interview(req)
 

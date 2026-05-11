@@ -28,8 +28,12 @@ class AudioInterviewService:
         
         try:
             logger.info(">>> LLM CALL START [start_audio_interview] | Model: gemini-2.5-flash")
-            response = await self.model.generate_content_async(prompt)
+            response = await self.model.generate_content_async(
+                prompt,
+                generation_config={"temperature": 0.8}
+            )
             logger.info("<<< LLM CALL SUCCESS [start_audio_interview]")
+
             content = response.text.strip()
             if content.startswith("```json"):
                 content = content[7:-3].strip()

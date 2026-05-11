@@ -2,7 +2,10 @@ from app.schemas.interview import InterviewStartRequest, InterviewResponse, Inte
 from app.services.interview_service import InterviewService
 from app.utils.auth import get_current_user
 from app.utils.usage import can_use_feature, deduct_feature_usage
+from app.utils.validation import validate_job_description, validate_resume_text
+
 from app.models.user import User
+
 from app.models.interview import InterviewResult as DBInterviewResult
 from app.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,8 +46,13 @@ async def start_interview(
         if not can_use_feature(current_user, "mock_interview"):
             raise HTTPException(status_code=403, detail="Mock interview limit reached. Please upgrade or wait for reset.")
 
+        validate_job_description(job_description)
+
+
         resume_text = await extract_text_from_pdf(resume_pdf)
+        validate_resume_text(resume_text)
         from app.schemas.interview import InterviewStartRequest
+
         req = InterviewStartRequest(resume_text=resume_text, job_description=job_description)
 
         response = await interview_service.start_interview(req)
