@@ -29,8 +29,9 @@ def reset_all_usage():
 
         # Monthly reset (only run if 1st)
         if now.day == 1:
-            # Mock interviews are now persistent and not reset monthly
+            # Mock and Audio interviews are now persistent and not reset monthly
             pass
+
 
     db.commit()
     db.close()

@@ -163,11 +163,10 @@ async def get_usage(current_user: User = Depends(get_current_user)):
         "resume_tailoring_left_this_week": (current_user.resume_tailoring_left_this_week or 0) + (current_user.purchased_tailor_credits or 0),
         "purchased_ats_credits": current_user.purchased_ats_credits or 0,
         "purchased_tailor_credits": current_user.purchased_tailor_credits or 0,
-        "mock_interviews_left_this_month": current_user.mock_interviews_left_this_month or 0,
-        "audio_interviews_left_this_month": current_user.audio_interviews_left_this_month or 0,
+        "mock_interviews_left": current_user.mock_interviews_left or 0,
+        "audio_interviews_left": current_user.audio_interviews_left or 0,
         "next_reset_times": {
             "ats_check": next_daily_reset.isoformat(),
             "resume_tailoring": next_weekly_reset.isoformat(),
-            "mock_interview": next_monthly_reset.isoformat()
         }
-    }
+    }

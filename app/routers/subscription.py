@@ -29,7 +29,8 @@ async def subscribe(plan_name: str, current_user: User = Depends(get_current_use
     # Reset usage based on new plan
     current_user.ats_checks_left_today = plan.max_ats_checks
     current_user.resume_tailoring_left_this_week = plan.max_resume_tailoring
-    current_user.mock_interviews_left_this_month = plan.max_mock_interviews
+    current_user.mock_interviews_left = (current_user.mock_interviews_left or 0) + plan.max_mock_interviews
+
 
     await db.commit()
     return {"message": f"Successfully subscribed to {plan_name}"}
