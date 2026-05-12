@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 import razorpay
 from app.routers.auth import get_current_user
 from app.config import settings
+from app.utils.logging import log_payment_event
+
 
 logger = logging.getLogger(__name__)
 
@@ -146,5 +148,10 @@ async def verify_payment(
         user.mock_interviews_left = (user.mock_interviews_left or 0) + plan.max_mock_interviews
 
     await db.commit()
+    
+    # Structured Payment Logging
+    amount_paid = PLAN_PRICES.get(plan_name, {}).get("amount", 0) / 100.0 # Convert from paise to INR
+    log_payment_event("PAYMENT_SUCCESS", str(user.id), amount_paid, f"PLAN: {plan_name}")
+    
     logger.info("Payment processed for user %s: plan=%s", user.id, plan_name)
     return JSONResponse(content={"message": "Payment verified and processed successfully"})

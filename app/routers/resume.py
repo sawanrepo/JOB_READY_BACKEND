@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, desc
 from app.database import get_db
 from app.models.resume import ResumeHistory as DBResumeHistory
-from app.utils.usage import can_use_feature, deduct_feature_usage
+from app.utils.usage import can_use_feature_async, deduct_feature_usage_atomic, refund_feature_usage_atomic
+
+
 from app.utils.validation import validate_job_description, validate_resume_text
 
 from datetime import datetime, timedelta, timezone
@@ -30,18 +32,42 @@ async def ats_check(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    if not can_use_feature(current_user, "ats_check"):
+    if not await can_use_feature_async(db, current_user.id, "ats_check"):
         raise HTTPException(status_code=403, detail="ATS check limit reached. Upgrade plan or wait for reset.")
+
     
     validate_job_description(job_description)
 
+    # 1. Deduct first to prevent race conditions
+    await deduct_feature_usage_atomic(db, current_user.id, "ats_check")
+    await db.commit() # Save deduction immediately
     
-    resume_text = await extract_text_from_pdf(resume_pdf)
-    validate_resume_text(resume_text)
-    result =  await run_analyze_resume(resume_text, job_description)
+    try:
+        # 2. Extract and Validate
+        resume_text = await extract_text_from_pdf(resume_pdf)
+        validate_resume_text(resume_text)
+        
+        # 3. AI Analysis
+        result_dict = await run_analyze_resume(resume_text, job_description)
+        
+        # Check if AI identified it as a non-resume
+        if not result_dict.get("is_resume", True):
+            raise HTTPException(status_code=400, detail=result_dict.get("error_message", "The uploaded PDF does not appear to be a valid resume."))
+
+        result = ResumeAnalysisResponse(**result_dict)
+    except Exception as e:
+        # 4. Refund on failure
+        await refund_feature_usage_atomic(db, current_user.id, "ats_check")
+        await db.commit()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"ATS Analysis failed: {str(e)}")
 
 
-    deduct_feature_usage(current_user, "ats_check")
+
+    # History update happens after successful analysis
+
+
     
     # Update History: Delete old ATS and save new one
     delete_stmt = delete(DBResumeHistory).where(
@@ -69,16 +95,40 @@ async def tailor_resume_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    if not can_use_feature(current_user, "resume_tailoring"):
+    if not await can_use_feature_async(db, current_user.id, "resume_tailoring"):
         raise HTTPException(status_code=403, detail="Resume tailoring limit reached. Upgrade plan or wait for reset.")
+
     
     validate_job_description(job_description)
     
-    resume_text = await extract_text_from_pdf(resume_pdf)
-    validate_resume_text(resume_text)
+    # 1. Deduct first to prevent race conditions
+    await deduct_feature_usage_atomic(db, current_user.id, "resume_tailoring")
+    await db.commit() # Save deduction immediately
 
-    result =  await tailor_resume(resume_pdf, job_description)
-    deduct_feature_usage(current_user, "resume_tailoring")
+    try:
+        # 2. Extract and Validate
+        resume_text = await extract_text_from_pdf(resume_pdf)
+        validate_resume_text(resume_text)
+
+        # 3. AI Tailoring
+        result_dict = await tailor_resume(resume_pdf, job_description)
+        
+        # Check if AI identified it as a non-resume
+        if not result_dict.get("is_resume", True):
+            raise HTTPException(status_code=400, detail=result_dict.get("error_message", "The uploaded PDF does not appear to be a valid resume."))
+
+        result = TailoredResumeResponse(**result_dict)
+    except Exception as e:
+        # 4. Refund on failure
+        await refund_feature_usage_atomic(db, current_user.id, "resume_tailoring")
+        await db.commit()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Resume tailoring failed: {str(e)}")
+
+    # History update happens after successful tailoring
+
+
     
     # Update History: Delete old tailor and save new one
     # First, get the old filename to delete the file

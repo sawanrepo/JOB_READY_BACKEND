@@ -16,6 +16,9 @@ class ResumeAnalysisResponse(BaseModel):
     action_verbs_count: int = 0
     red_flags: List[str] = []
     improvement_suggestions: List[str] = []
+    is_resume: bool = True
+    error_message: Optional[str] = None
+
 
 class PersonalInfo(BaseModel):
     location: Optional[str] = None
@@ -66,3 +69,5 @@ class TailoredResumeResponse(BaseModel):
     tailored_content: Optional[TailoredContent] = None
     filename: Optional[str] = None
     pdf_url: Optional[str] = None
+    is_resume: bool = True
+    error_message: Optional[str] = None

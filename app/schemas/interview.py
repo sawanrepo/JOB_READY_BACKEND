@@ -19,6 +19,6 @@ class InterviewResult(BaseModel):
     confidence_score: int
     strengths: List[str]
     weaknesses: List[str]
-    improvement_suggestions: str
+    improvement_suggestions: List[str]
     final_verdict: str  # Ready / Almost Ready / Needs Improvement
     feedback_summary: str

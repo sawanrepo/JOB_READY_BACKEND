@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -13,3 +13,23 @@ class InterviewResult(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     user = relationship("User", backref="interview_results")
+
+class InterviewSession(Base):
+    __tablename__ = "interview_sessions"
+    
+    id = Column(String, primary_key=True, index=True) # session_id (hex/uuid)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    interview_type = Column(String, nullable=False) # "audio" or "video"
+    resume_text = Column(String, nullable=False)
+    job_description = Column(String, nullable=False)
+    history = Column(JSON, server_default='[]') # List of {question, response_analysis}
+    questions = Column(JSON, nullable=True) # For audio interview (list of 10 questions)
+    question_number = Column(Integer, server_default='0')
+    current_question = Column(String, nullable=True)
+    is_active = Column(Boolean, server_default='1')
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    user = relationship("User", back_populates="interview_sessions")
+
+# Update User model back_populates if needed, but backref/back_populates works.

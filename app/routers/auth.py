@@ -34,6 +34,8 @@ from datetime import timedelta
 from app.utils.auth import get_current_user
 from app.models.user import User
 from app.utils.limiter import limiter
+from app.utils.logging import log_security_event
+
 
 router = APIRouter()
 
@@ -58,6 +60,9 @@ async def verify_otp_endpoint(request: VerifyOTPRequest, db: AsyncSession = Depe
         expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     refresh_token = create_refresh_token({"sub": user.email})
+    
+    log_security_event("LOGIN_SUCCESS", str(user.id), {"method": "OTP", "email": user.email})
+
     
     return {
         "access_token": access_token,
@@ -122,6 +127,9 @@ async def login(
     )
     refresh_token = create_refresh_token({"sub": user.email})
     
+    log_security_event("LOGIN_SUCCESS", str(user.id), {"method": "PASSWORD", "email": user.email})
+
+    
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -143,6 +151,9 @@ async def google_auth(
         expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     refresh_token = create_refresh_token({"sub": user.email})
+    
+    log_security_event("LOGIN_SUCCESS", str(user.id), {"method": "GOOGLE", "email": user.email})
+
     
     return {
         "access_token": access_token,

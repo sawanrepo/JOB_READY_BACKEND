@@ -22,6 +22,8 @@ class User(Base):
 
     subscription_id = Column(Integer, ForeignKey("subscription_plans.id"), default=1)
     subscription = relationship("SubscriptionPlan")
+    interview_sessions = relationship("InterviewSession", back_populates="user")
+
 
     # 🔢 Usage tracking
     ats_checks_left_today = Column(Integer, default=1)

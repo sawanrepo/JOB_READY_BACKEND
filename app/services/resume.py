@@ -26,7 +26,17 @@ async def tailor_resume(resume_pdf: UploadFile, job_description: str) -> dict:
         resume_text = await extract_text_from_pdf(resume_pdf)
         tailored_content = await gemini_service.tailor_resume(resume_text, job_description)
 
+        if not tailored_content.get("is_resume", True):
+            return {
+                "is_resume": False,
+                "error_message": tailored_content.get("error_message", "The uploaded PDF does not appear to be a valid resume."),
+                "tailored_content": None,
+                "filename": None,
+                "pdf_url": None
+            }
+
         latex_content = await asyncio.to_thread(render_latex_template, tailored_content)
+
         pdf_path = await asyncio.to_thread(compile_latex_to_pdf, latex_content)
         filename = os.path.basename(pdf_path)
 

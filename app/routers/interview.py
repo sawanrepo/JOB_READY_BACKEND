@@ -1,7 +1,8 @@
 from app.schemas.interview import InterviewStartRequest, InterviewResponse, InterviewResult
 from app.services.interview_service import InterviewService
 from app.utils.auth import get_current_user
-from app.utils.usage import can_use_feature, deduct_feature_usage
+from app.utils.usage import can_use_feature_async, deduct_feature_usage_atomic
+
 from app.utils.validation import validate_job_description, validate_resume_text
 
 from app.models.user import User
@@ -23,13 +24,69 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 interview_service = InterviewService()
 
-from app.utils.file import extract_text_from_pdf
+@router.get("/active-sessions")
+@limiter.limit("5/minute")
+async def get_active_sessions(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Returns any active (unfinished) interview sessions for the user."""
+    stmt = select(InterviewSession).where(
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.is_active == True
+    ).order_by(desc(InterviewSession.created_at))
+    
+    result = await db.execute(stmt)
+    sessions = result.scalars().all()
+    
+    return [
+        {
+            "id": s.id,
+            "type": s.interview_type,
+            "created_at": s.created_at,
+            "question_number": s.question_number
+        } for s in sessions
+    ]
+
+@router.get("/session/{session_id}", response_model=InterviewResponse)
+@limiter.limit("10/minute")
+async def get_session_status(
+    request: Request,
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+
+    """Fetches the current state of an active interview session."""
+    stmt = select(InterviewSession).where(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    return InterviewResponse(
+        session_id=session.id,
+        question=session.current_question or "Starting interview...",
+        question_number=session.question_number,
+        total_questions=8,
+        interview_ended=not session.is_active
+    )
+
+
+
+from app.utils.file import extract_text_from_pdf, validate_file_security, ALLOWED_VIDEO_EXTENSIONS
+from app.models.interview import InterviewSession
 
 TEMP_DIR = "temp_videos"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Fix #15: maximum allowed video upload size (50 MB)
-MAX_VIDEO_SIZE_BYTES = 50 * 1024 * 1024
+# MAX_VIDEO_SIZE_BYTES is now handled by utility
+
 
 
 @router.post("/start", response_model=InterviewResponse)
@@ -43,8 +100,9 @@ async def start_interview(
 ):
     try:
         # Check usage
-        if not can_use_feature(current_user, "mock_interview"):
+        if not await can_use_feature_async(db, current_user.id, "mock_interview"):
             raise HTTPException(status_code=403, detail="Mock interview limit reached. Please upgrade or wait for reset.")
+
 
         validate_job_description(job_description)
 
@@ -55,11 +113,13 @@ async def start_interview(
 
         req = InterviewStartRequest(resume_text=resume_text, job_description=job_description)
 
-        response = await interview_service.start_interview(req)
+        response = await interview_service.start_interview(db, current_user.id, req)
+
 
         # Deduct usage only if successful
-        deduct_feature_usage(current_user, "mock_interview")
+        await deduct_feature_usage_atomic(db, current_user.id, "mock_interview")
         await db.commit()
+
 
         return response
     except HTTPException:
@@ -80,23 +140,27 @@ async def process_response(
     video: UploadFile = File(...),
     # Fix #2: require authenticated user so sessions cannot be hijacked
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
+
     # Fix #8: use a server-generated UUID filename, never trust client-supplied filenames
     ext = os.path.splitext(video.filename or "")[1] or ".webm"
     safe_ext = ext if ext.lower() in {".webm", ".mp4", ".ogg", ".mkv"} else ".webm"
     temp_path = os.path.join(TEMP_DIR, f"{uuid.uuid4()}{safe_ext}")
 
     try:
-        # Fix #15: enforce upload size limit before writing to disk
-        content = await video.read(MAX_VIDEO_SIZE_BYTES + 1)
-        if len(content) > MAX_VIDEO_SIZE_BYTES:
-            raise HTTPException(status_code=413, detail="Video file too large. Maximum allowed size is 50 MB.")
+        # Enforce security validation
+        validate_file_security(video, ALLOWED_VIDEO_EXTENSIONS, max_size_mb=50)
 
+        content = await video.read()
         async with aiofiles.open(temp_path, "wb") as out_file:
+
             await out_file.write(content)
 
         logger.info(f"Saved video to {temp_path}")
-        response = await interview_service.process_response(session_id, temp_path)
+        response = await interview_service.process_response(db, session_id, temp_path)
+        await db.commit() # Commit history updates
+
         return response
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -151,7 +215,8 @@ async def get_result(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        result_data = await interview_service.generate_result(session_id)
+        result_data = await interview_service.generate_result(db, session_id)
+
         
         # Delete previous video results for this user
         delete_stmt = delete(DBInterviewResult).where(
@@ -167,7 +232,13 @@ async def get_result(
             result_data=result_data
         )
         db.add(db_result)
+        
+        # Cleanup: Delete the persistent session after successful result generation
+        session_delete_stmt = delete(InterviewSession).where(InterviewSession.id == session_id)
+        await db.execute(session_delete_stmt)
+        
         await db.commit()
+
         
         return result_data
     except ValueError as e:
