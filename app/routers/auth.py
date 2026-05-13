@@ -53,7 +53,11 @@ async def register(request: Request, user_data: UserCreate, db: AsyncSession = D
 
 @router.post("/verify-otp", response_model=Token)
 async def verify_otp_endpoint(request: VerifyOTPRequest, db: AsyncSession = Depends(get_db)):
-    user = await verify_otp(request.email, request.otp, db)
+    try:
+        user = await verify_otp(request.email, request.otp, db)
+    except HTTPException as e:
+        log_security_event("LOGIN_FAILURE", "anonymous", {"method": "OTP", "email": request.email, "reason": str(e.detail)})
+        raise e
     
     access_token = create_access_token(
         data={"sub": user.email},
@@ -119,7 +123,11 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
-    user = await authenticate_user(form_data.username, form_data.password, db)
+    try:
+        user = await authenticate_user(form_data.username, form_data.password, db)
+    except HTTPException as e:
+        log_security_event("LOGIN_FAILURE", "anonymous", {"method": "PASSWORD", "email": form_data.username, "reason": str(e.detail)})
+        raise e
     
     access_token = create_access_token(
         data={"sub": user.email},
@@ -144,7 +152,11 @@ async def google_auth(
     request: GoogleAuthRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    user = await handle_google_oauth(request.code, db)
+    try:
+        user = await handle_google_oauth(request.code, db)
+    except HTTPException as e:
+        log_security_event("LOGIN_FAILURE", "anonymous", {"method": "GOOGLE", "reason": str(e.detail)})
+        raise e
     
     access_token = create_access_token(
         data={"sub": user.email},

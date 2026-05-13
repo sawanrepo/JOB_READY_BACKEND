@@ -7,6 +7,7 @@ from app.database import get_db
 from app.models.user import User
 from app.utils.security import verify_token
 from app.config import settings
+from app.utils.logging import user_id_var
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
@@ -41,4 +42,5 @@ async def get_current_user(
             detail="Inactive user"
         )
     
+    user_id_var.set(str(user.id))
     return user

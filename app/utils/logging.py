@@ -9,6 +9,7 @@ from contextvars import ContextVar
 
 # Context variable to store trace_id for the current request
 trace_id_var: ContextVar[str] = ContextVar("trace_id", default="")
+user_id_var: ContextVar[str] = ContextVar("user_id", default="anonymous")
 
 # Directories for logs
 LOG_DIR = "logs"
@@ -17,11 +18,12 @@ os.makedirs(LOG_DIR, exist_ok=True)
 class TraceFormatter(logging.Formatter):
     def format(self, record):
         record.trace_id = trace_id_var.get()
+        record.user_id = user_id_var.get()
         return super().format(record)
 
 def setup_logging():
     # Base configuration
-    log_format = "%(asctime)s | %(levelname)s | %(trace_id)s | %(name)s | %(message)s"
+    log_format = "%(asctime)s | %(levelname)s | %(trace_id)s | %(user_id)s | %(name)s | %(message)s"
     formatter = TraceFormatter(log_format)
 
     # 1. Normal App Logger (10 days retention)
@@ -59,6 +61,7 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         trace_id = str(uuid.uuid4())
         trace_id_var.set(trace_id)
+        user_id_var.set("anonymous") # Reset for new request
         
         start_time = time.time()
         
@@ -99,8 +102,12 @@ security_logger = logging.getLogger("security")
 payment_logger = logging.getLogger("payment")
 
 def log_security_event(event_type: str, user_id: str, metadata: dict = None):
+    user_id_var.set(user_id)
     msg = f"SEC_EVENT | {event_type} | USER: {user_id} | DATA: {metadata or {}}"
-    security_logger.warning(msg)
+    if event_type.endswith("_SUCCESS"):
+        security_logger.info(msg)
+    else:
+        security_logger.warning(msg)
 
 def log_payment_event(event_type: str, user_id: str, amount: float, status: str):
     msg = f"PAY_EVENT | {event_type} | USER: {user_id} | AMT: {amount} | STATUS: {status}"
