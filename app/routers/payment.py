@@ -89,38 +89,38 @@ async def verify_payment(
 
     # Individual Packs
     if plan_name == "ats_one_time":
-        user.purchased_ats_credits += 1
+        user.purchased_ats_credits = (user.purchased_ats_credits or 0) + 1
     elif plan_name == "tailor_one_time":
-        user.purchased_tailor_credits += 1
+        user.purchased_tailor_credits = (user.purchased_tailor_credits or 0) + 1
     elif plan_name == "audio_one_time":
-        user.audio_interviews_left += 1
+        user.audio_interviews_left = (user.audio_interviews_left or 0) + 1
     elif plan_name == "video_one_time":
-        user.mock_interviews_left += 1
+        user.mock_interviews_left = (user.mock_interviews_left or 0) + 1
     
     # Bundles
     elif plan_name == "starter_pack":
-        user.purchased_ats_credits += 3
-        user.purchased_tailor_credits += 1
+        user.purchased_ats_credits = (user.purchased_ats_credits or 0) + 3
+        user.purchased_tailor_credits = (user.purchased_tailor_credits or 0) + 1
     elif plan_name == "resume_boost_pack":
-        user.purchased_ats_credits += 5
-        user.purchased_tailor_credits += 3
+        user.purchased_ats_credits = (user.purchased_ats_credits or 0) + 5
+        user.purchased_tailor_credits = (user.purchased_tailor_credits or 0) + 3
     elif plan_name == "interview_pack":
-        user.audio_interviews_left += 2
-        user.mock_interviews_left += 1
+        user.audio_interviews_left = (user.audio_interviews_left or 0) + 2
+        user.mock_interviews_left = (user.mock_interviews_left or 0) + 1
     elif plan_name == "combo_pack":
-        user.purchased_ats_credits += 5
-        user.purchased_tailor_credits += 5
-        user.audio_interviews_left += 2
-        user.mock_interviews_left += 1
+        user.purchased_ats_credits = (user.purchased_ats_credits or 0) + 5
+        user.purchased_tailor_credits = (user.purchased_tailor_credits or 0) + 5
+        user.audio_interviews_left = (user.audio_interviews_left or 0) + 2
+        user.mock_interviews_left = (user.mock_interviews_left or 0) + 1
 
     
     # Legacy plan names (for backward compatibility during transition if needed)
     elif plan_name == "one_time":
-        user.purchased_ats_credits += 1
+        user.purchased_ats_credits = (user.purchased_ats_credits or 0) + 1
     elif plan_name == "mock_interview_one_time":
-        user.mock_interviews_left += 1
+        user.mock_interviews_left = (user.mock_interviews_left or 0) + 1
     elif plan_name == "audio_interview_one_time":
-        user.audio_interviews_left += 1
+        user.audio_interviews_left = (user.audio_interviews_left or 0) + 1
     
     else:
         # It's a subscription plan

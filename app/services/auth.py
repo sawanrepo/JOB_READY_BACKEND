@@ -31,7 +31,19 @@ async def authenticate_user(email: str, password: str, db) -> User:
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalars().first()
 
-    if not user or not verify_password(password, user.hashed_password):
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+        )
+
+    if user.is_google_oauth and not user.hashed_password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This account uses Google Login. Please login with Google or use 'Forgot Password' to set a password.",
+        )
+
+    if not verify_password(password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -155,8 +167,8 @@ async def forgot_password(email: str, db) -> None:
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalars().first()
 
-    # Fix #3: don't reveal whether the email exists in the system
-    if not user or (user.is_google_oauth and not user.hashed_password):
+    # Allow password reset for existing users, including those who signed up with Google
+    if not user:
         return
 
     # Check 2-minute cooldown
@@ -271,11 +283,20 @@ async def handle_google_oauth(code: str, db) -> User:
         user = result.scalars().first()
 
         if user:
-            if not user.is_google_oauth:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Email already registered with password"
-                )
+            # Link Google account to existing user if not already linked
+            # This allows users who registered with a password to also use Google Login
+            if not user.is_google_oauth or not user.google_id:
+                user.is_google_oauth = True
+                user.google_id = user_info["sub"]
+                user.is_verified = True  # Google has verified the email
+                
+                # Initialize credits if they are None (legacy users)
+                user.audio_interviews_left = user.audio_interviews_left or 0
+                user.mock_interviews_left = user.mock_interviews_left or 0
+                user.purchased_ats_credits = user.purchased_ats_credits or 0
+                user.purchased_tailor_credits = user.purchased_tailor_credits or 0
+                
+                await db.commit()
             return user
 
         # Create new user

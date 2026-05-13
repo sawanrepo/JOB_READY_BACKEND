@@ -7,7 +7,11 @@ from app.config import settings
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-def verify_password(plain_password: str, hashed_password: bytes) -> bool:
+from typing import Optional
+
+def verify_password(plain_password: str, hashed_password: Optional[bytes]) -> bool:
+    if not hashed_password:
+        return False
     return pwd_context.verify(plain_password, hashed_password.decode('utf-8'))
 
 
