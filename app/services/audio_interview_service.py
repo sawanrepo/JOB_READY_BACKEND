@@ -2,9 +2,12 @@ import os
 import json
 import logging
 import asyncio
+import uuid
+import boto3
+import httpx
 import google.generativeai as genai
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 from app.config import settings
 from app.schemas.interview import InterviewStartRequest, InterviewResult
 from app.prompts import AUDIO_INTERVIEW_QUESTIONS_PROMPT, AUDIO_INTERVIEW_REPORT_PROMPT
@@ -16,6 +19,27 @@ class AudioInterviewService:
     def __init__(self):
         genai.configure(api_key=settings.GEMINI_API_KEY)
         self.model = genai.GenerativeModel('gemini-2.5-flash')
+        
+        # AWS Clients
+        try:
+            self.s3 = boto3.client(
+                's3',
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                region_name=settings.AWS_REGION
+            )
+            self.transcribe = boto3.client(
+                'transcribe',
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                region_name=settings.AWS_REGION
+            )
+            if not settings.AWS_S3_BUCKET_NAME:
+                logger.warning("AWS_S3_BUCKET_NAME is not set. Audio interviews will fail to transcribe.")
+        except Exception as e:
+            logger.error(f"Failed to initialize AWS clients: {e}")
+            self.s3 = None
+            self.transcribe = None
 
     async def start_audio_interview(self, db: AsyncSession, user_id: int, request: InterviewStartRequest) -> dict:
         # Check for any existing active session for this user
@@ -33,7 +57,6 @@ class AudioInterviewService:
 
         session_id = os.urandom(4).hex()
 
-        
         # 1. Generate 10 questions at once
         prompt = AUDIO_INTERVIEW_QUESTIONS_PROMPT.format(
             resume_text=request.resume_text[:1000] + "..." if len(request.resume_text) > 1000 else request.resume_text,
@@ -68,7 +91,8 @@ class AudioInterviewService:
             resume_text=request.resume_text,
             job_description=request.job_description,
             questions=questions,
-            is_active=True
+            is_active=True,
+            history=[] # Initialize empty history
         )
         db.add(new_session)
         await db.flush()
@@ -79,7 +103,108 @@ class AudioInterviewService:
             "total_questions": len(questions)
         }
 
-    async def generate_result(self, db: AsyncSession, session_id: str, audio_path: str) -> dict:
+    async def save_audio_answer(self, db: AsyncSession, session_id: str, question_index: int, audio_path: str):
+        """Saves audio answer metadata and triggers background STT."""
+        stmt = select(InterviewSession).where(InterviewSession.id == session_id)
+        result = await db.execute(stmt)
+        session = result.scalar_one_or_none()
+        
+        if not session:
+            raise ValueError("Session not found")
+
+        # Update progress
+        session.question_number = question_index + 1
+        await db.commit()
+        
+        # Return necessary data for background task
+        return {
+            "session_id": session_id,
+            "question_text": session.questions[question_index],
+            "audio_path": audio_path,
+            "question_index": question_index
+        }
+
+    async def process_stt_background(self, session_id: str, question_index: int, question_text: str, audio_path: str, db_factory):
+        """Background task to handle S3 upload and AWS Transcribe."""
+        if not self.s3 or not self.transcribe:
+            logger.error(f"AWS clients not initialized. Skipping STT for session {session_id}")
+            return
+
+        job_name = f"stt_{session_id}_{question_index}_{uuid.uuid4().hex[:6]}"
+        s3_key = f"audio_interviews/{session_id}/q_{question_index}.webm"
+        
+        try:
+            # 1. Upload to S3
+            logger.info(f"Uploading {audio_path} to S3 bucket {settings.AWS_S3_BUCKET_NAME}...")
+            await asyncio.to_thread(
+                self.s3.upload_file,
+                audio_path,
+                settings.AWS_S3_BUCKET_NAME,
+                s3_key
+            )
+            
+            # 2. Start Transcribe Job
+            media_uri = f"s3://{settings.AWS_S3_BUCKET_NAME}/{s3_key}"
+            logger.info(f"Starting Transcribe job {job_name} for {media_uri}")
+            await asyncio.to_thread(
+                self.transcribe.start_transcription_job,
+                TranscriptionJobName=job_name,
+                Media={'MediaFileUri': media_uri},
+                MediaFormat='webm',
+                LanguageCode='en-US'
+            )
+            
+            # 3. Wait for Job Completion
+            while True:
+                status_response = await asyncio.to_thread(
+                    self.transcribe.get_transcription_job,
+                    TranscriptionJobName=job_name
+                )
+                job_status = status_response['TranscriptionJob']['TranscriptionJobStatus']
+                if job_status in ['COMPLETED', 'FAILED']:
+                    break
+                await asyncio.sleep(5)
+            
+            if job_status == 'FAILED':
+                raise Exception(f"Transcribe job {job_name} failed")
+            
+            # 4. Get Transcript
+            transcript_uri = status_response['TranscriptionJob']['Transcript']['TranscriptFileUri']
+            async with httpx.AsyncClient() as client:
+                res = await client.get(transcript_uri)
+                res_json = res.json()
+                transcript_text = res_json['results']['transcripts'][0]['transcript']
+            
+            # 5. Update DB History
+            async with db_factory() as db:
+                stmt = select(InterviewSession).where(InterviewSession.id == session_id)
+                res = await db.execute(stmt)
+                session = res.scalar_one_or_none()
+                if session:
+                    history = list(session.history or [])
+                    # Ensure history has enough space (fill gaps if needed)
+                    while len(history) <= question_index:
+                        history.append(None)
+                    
+                    history[question_index] = {
+                        "question": question_text,
+                        "answer_text": transcript_text,
+                        "timestamp": str(uuid.uuid4()) # For uniqueness
+                    }
+                    session.history = history
+                    await db.commit()
+            
+            logger.info(f"STT complete for session {session_id}, Q{question_index}")
+            
+        except Exception as e:
+            logger.error(f"STT Error for session {session_id}, Q{question_index}: {e}", exc_info=True)
+        finally:
+            # Cleanup local file
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+
+    async def generate_result(self, db: AsyncSession, session_id: str) -> dict:
+        """Generates report using transcribed text from history."""
         stmt = select(InterviewSession).where(InterviewSession.id == session_id)
         result = await db.execute(stmt)
         session = result.scalar_one_or_none()
@@ -87,55 +212,48 @@ class AudioInterviewService:
         if not session:
             raise ValueError("Invalid session ID")
         
-        logger.info(f"Uploading merged audio {audio_path} to Gemini...")
-        audio_file = await asyncio.to_thread(
-            genai.upload_file, 
-            path=audio_path,
-            mime_type='audio/webm'
-        )
-        
-        while True:
-             file_info = await asyncio.to_thread(genai.get_file, audio_file.name)
-             if file_info.state.name != 'PROCESSING':
-                  break
-             await asyncio.sleep(2)
+        # Wait for any pending STT jobs (simplified: just check if history length matches questions)
+        # In a production app, we might want a more robust way to track pending jobs.
+        max_retries = 12 # 1 minute max wait
+        while len([h for h in (session.history or []) if h is not None]) < len(session.questions or []):
+            if max_retries <= 0:
+                break
+            logger.info(f"Waiting for STT jobs to complete... {len(session.history)}/10")
+            await asyncio.sleep(5)
+            await db.refresh(session)
+            max_retries -= 1
 
-        if file_info.state.name == 'FAILED':
-             raise ValueError("Audio processing failed by Gemini")
+        history_json = json.dumps(session.history, indent=2)
 
         prompt = AUDIO_INTERVIEW_REPORT_PROMPT.format(
             resume_text=session.resume_text,
             job_description=session.job_description,
-            questions_json=json.dumps(session.questions, indent=2)
+            questions_json=history_json # Now sending the Q&A text history
         )
         
         try:
             generation_config = {"response_mime_type": "application/json"}
+            # We don't need to send the audio file anymore as we have transcripts
             response = await self.model.generate_content_async(
-                contents=[prompt, audio_file],
+                contents=[prompt],
                 generation_config=generation_config
             )
             session.is_active = False # Deactivate after completion
             raw_result = json.loads(response.text)
             
-            # Manual Sanitization to prevent ResponseValidationError
             sanitized = {
-                "communication_score": raw_result.get("communication_score") or raw_result.get("communication", 0),
-                "technical_knowledge_score": raw_result.get("technical_knowledge_score") or raw_result.get("technical_knowledge", 0),
-                "problem_solving_score": raw_result.get("problem_solving_score") or raw_result.get("problem_solving", 0),
-                "confidence_score": raw_result.get("confidence_score") or raw_result.get("confidence", 0),
+                "communication_score": raw_result.get("communication_score") or 0,
+                "technical_knowledge_score": raw_result.get("technical_knowledge_score") or 0,
+                "problem_solving_score": raw_result.get("problem_solving_score") or 0,
+                "confidence_score": raw_result.get("confidence_score") or 0,
                 "strengths": raw_result.get("strengths") or [],
                 "weaknesses": raw_result.get("weaknesses") or [],
                 "final_verdict": raw_result.get("final_verdict") or "Needs Improvement",
                 "feedback_summary": raw_result.get("feedback_summary") or ""
             }
             
-            # Ensure improvement_suggestions is a list
             suggestions = raw_result.get("improvement_suggestions") or []
-            if isinstance(suggestions, str):
-                sanitized["improvement_suggestions"] = [suggestions]
-            else:
-                sanitized["improvement_suggestions"] = suggestions
+            sanitized["improvement_suggestions"] = [suggestions] if isinstance(suggestions, str) else suggestions
                 
             return sanitized
 

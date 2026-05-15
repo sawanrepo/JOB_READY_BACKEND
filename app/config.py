@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     RAZORPAY_KEY_ID: str = Field(..., env="RAZORPAY_KEY_ID")
     RAZORPAY_KEY_SECRET: str = Field(..., env="RAZORPAY_KEY_SECRET")
 
+    # AWS
+    AWS_ACCESS_KEY_ID: str = Field(default="", env="AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY: str = Field(default="", env="AWS_SECRET_ACCESS_KEY")
+    AWS_REGION: str = Field(default="us-east-1", env="AWS_REGION")
+    AWS_S3_BUCKET_NAME: str = Field(default="", env="AWS_S3_BUCKET_NAME")
+
     LATEX_PATH: str = Field(default="pdflatex")
 
     @field_validator("SECRET_KEY")
