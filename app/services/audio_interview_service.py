@@ -196,6 +196,21 @@ class AudioInterviewService:
             
             logger.info(f"STT complete for session {session_id}, Q{question_index}")
             
+            # 6. Cleanup S3 and Transcribe Job
+            try:
+                logger.info(f"Cleaning up S3 and Transcribe job for {job_name}")
+                await asyncio.to_thread(
+                    self.s3.delete_object,
+                    Bucket=settings.AWS_S3_BUCKET_NAME,
+                    Key=s3_key
+                )
+                await asyncio.to_thread(
+                    self.transcribe.delete_transcription_job,
+                    TranscriptionJobName=job_name
+                )
+            except Exception as cleanup_err:
+                logger.warning(f"Cleanup failed for STT job {job_name}: {cleanup_err}")
+
         except Exception as e:
             logger.error(f"STT Error for session {session_id}, Q{question_index}: {e}", exc_info=True)
         finally:

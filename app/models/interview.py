@@ -26,6 +26,7 @@ class InterviewSession(Base):
     questions = Column(JSON, nullable=True) # For audio interview (list of 10 questions)
     question_number = Column(Integer, server_default='0')
     current_question = Column(String, nullable=True)
+    warnings_count = Column(Integer, server_default='0')
     is_active = Column(Boolean, server_default='1')
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

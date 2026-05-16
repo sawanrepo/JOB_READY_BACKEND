@@ -49,6 +49,7 @@ async def get_audio_session_status(
         "total_questions": len(session.questions),
         "current_question_index": session.question_number,
         "history": session.history,
+        "warnings_count": session.warnings_count,
         "is_active": session.is_active
     }
 
@@ -102,7 +103,7 @@ async def save_audio_answer(
     temp_path = os.path.join(TEMP_DIR, f"ans_{session_id}_{question_index}_{uuid.uuid4().hex[:6]}{safe_ext}")
 
     try:
-        validate_file_security(audio, ALLOWED_AUDIO_EXTENSIONS, max_size_mb=20)
+        validate_file_security(audio, ALLOWED_AUDIO_EXTENSIONS, max_size_mb=5)
         
         content = await audio.read()
         async with aiofiles.open(temp_path, "wb") as out_file:
@@ -169,3 +170,47 @@ async def get_audio_result(
     except Exception as e:
         logger.error(f"Error generating audio result: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{session_id}/warning")
+async def report_warning(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Increments the warning counter for a session."""
+    stmt = select(InterviewSession).where(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    session.warnings_count = (session.warnings_count or 0) + 1
+    
+    if session.warnings_count >= 5:
+        session.is_active = False
+        # Optional: Log malpractice reason
+        
+    await db.commit()
+    return {"warnings_count": session.warnings_count, "is_active": session.is_active}
+
+
+@router.post("/{session_id}/malpractice")
+async def report_malpractice(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Terminates a session due to malpractice."""
+    stmt = update(InterviewSession).where(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id
+    ).values(is_active=False)
+    
+    await db.execute(stmt)
+    await db.commit()
+    return {"status": "terminated", "message": "Interview ended due to malpractice."}
