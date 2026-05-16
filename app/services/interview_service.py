@@ -1,7 +1,8 @@
 import os
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 from app.config import settings
 from app.schemas.interview import InterviewStartRequest, InterviewResponse, InterviewResult
 from app.prompts import INTERVIEW_SYSTEM_PROMPT, INTERVIEW_ANALYSIS_PROMPT, INTERVIEW_REPORT_PROMPT
@@ -14,14 +15,14 @@ logger = logging.getLogger(__name__)
 
 class InterviewService:
     def __init__(self):
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        self.model = genai.GenerativeModel('gemini-2.5-flash')
+        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        self.model_id = 'gemini-2.5-flash'
 
     async def start_interview(self, db: AsyncSession, user_id: int, request: InterviewStartRequest) -> InterviewResponse:
         # Check for any existing active session for this user
-        # We use a select statement with is_active=True
         existing_stmt = select(InterviewSession).where(
             InterviewSession.user_id == user_id,
+            InterviewSession.interview_type == "video",
             InterviewSession.is_active == True
         )
         existing_result = await db.execute(existing_stmt)
@@ -29,7 +30,7 @@ class InterviewService:
             from fastapi import HTTPException
             raise HTTPException(
                 status_code=400, 
-                detail="You already have an active interview session. Please complete or resume it before starting a new one."
+                detail="You already have an active video interview session. Please complete or resume it before starting a new one."
             )
 
         session_id = os.urandom(4).hex()
@@ -122,10 +123,11 @@ class InterviewService:
         )
         
         try:
-            logger.info(">>> LLM CALL START [_generate_next_question] | Model: %s | Prompt chars: %d", 'gemini-2.5-flash', len(prompt))
-            response = await self.model.generate_content_async(
-                prompt,
-                generation_config={"temperature": 0.8}
+            logger.info(">>> LLM CALL START [_generate_next_question] | Model: %s | Prompt chars: %d", self.model_id, len(prompt))
+            response = await self.client.aio.models.generate_content(
+                model=self.model_id,
+                contents=prompt,
+                config=types.GenerateContentConfig(temperature=0.8)
             )
             logger.info("<<< LLM CALL SUCCESS [_generate_next_question]")
         except Exception as e:
@@ -138,10 +140,10 @@ class InterviewService:
 
     async def _analyze_video(self, video_path: str, question: str) -> str:
         logger.info(f"Uploading video {video_path} to Gemini...")
-        video_file = await asyncio.to_thread(genai.upload_file, path=video_path)
+        video_file = await self.client.aio.files.upload(path=video_path)
         
         while True:
-             file_info = await asyncio.to_thread(genai.get_file, video_file.name)
+             file_info = await self.client.aio.files.get(name=video_file.name)
              if file_info.state.name != 'PROCESSING':
                   break
              await asyncio.sleep(2)
@@ -151,7 +153,8 @@ class InterviewService:
 
         prompt = INTERVIEW_ANALYSIS_PROMPT.format(question=question)
         try:
-            response = await self.model.generate_content_async(
+            response = await self.client.aio.models.generate_content(
+                model=self.model_id,
                 contents=[prompt, video_file]
             )
             return response.text
@@ -167,6 +170,12 @@ class InterviewService:
         if not session:
             raise ValueError("Invalid session ID")
 
+        # DISCARD logic: No result if warnings reach 5
+        if (session.warnings_count or 0) >= 5:
+            session.is_active = False
+            await db.commit()
+            raise ValueError("Interview discarded due to malpractice (too many warnings). No result generated.")
+
         history_text = "\n".join([f"Q: {h['question']}\nAnalysis: {h['analysis']}" for h in session.history])
         
         prompt = INTERVIEW_REPORT_PROMPT.format(
@@ -176,10 +185,10 @@ class InterviewService:
         )
         
         try:
-            generation_config = {"response_mime_type": "application/json"}
-            response = await self.model.generate_content_async(
-                contents=[prompt],
-                generation_config=generation_config
+            response = await self.client.aio.models.generate_content(
+                model=self.model_id,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
             )
             session.is_active = False # Deactivate after completion
             raw_result = json.loads(response.text)

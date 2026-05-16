@@ -8,6 +8,7 @@ class InterviewResult(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    session_id = Column(String, unique=True, index=True, nullable=True) # ID of the session this result belongs to
     interview_type = Column(String, nullable=False) # "audio" or "video"
     result_data = Column(JSON, nullable=False) # The JSON result
     created_at = Column(DateTime(timezone=True), server_default=func.now())

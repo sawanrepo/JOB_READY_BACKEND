@@ -131,6 +131,32 @@ async def save_audio_answer(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/{session_id}/result", response_model=InterviewResult)
+@limiter.limit("10/minute")
+async def get_audio_result_get(
+    request: Request,
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetches result from history or generates it if session still exists."""
+    stmt = select(DBInterviewResult).where(
+        DBInterviewResult.session_id == session_id,
+        DBInterviewResult.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    db_result = result.scalar_one_or_none()
+    
+    if db_result:
+        return db_result.result_data
+        
+    # Fallback to generation if session exists
+    try:
+        return await get_audio_result(request, session_id, current_user, db)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Result not found")
+
+
 @router.post("/{session_id}/result", response_model=InterviewResult)
 @limiter.limit("5/minute")
 async def get_audio_result(
@@ -141,7 +167,23 @@ async def get_audio_result(
 ):
     """Generates the final report based on accumulated transcripts."""
     try:
+        # Check if result already exists
+        existing_stmt = select(DBInterviewResult).where(
+            DBInterviewResult.session_id == session_id,
+            DBInterviewResult.user_id == current_user.id
+        )
+        existing_res = await db.execute(existing_stmt)
+        if existing_db_res := existing_res.scalar_one_or_none():
+            return existing_db_res.result_data
+
+        # Get warnings count before deleting session
+        stmt = select(InterviewSession).where(InterviewSession.id == session_id)
+        session_res = await db.execute(stmt)
+        session = session_res.scalar_one_or_none()
+        warnings_count = session.warnings_count if session else 0
+
         result_data = await audio_interview_service.generate_result(db, session_id)
+        result_data["warnings_count"] = warnings_count # Include for record
 
         # Delete previous audio results for this user
         delete_stmt = delete(DBInterviewResult).where(
@@ -150,9 +192,10 @@ async def get_audio_result(
         )
         await db.execute(delete_stmt)
         
-        # Save to DB
+        # Save to DB with session_id
         db_result = DBInterviewResult(
             user_id=current_user.id,
+            session_id=session_id, # Persistent session ID for refresh
             interview_type="audio",
             result_data=result_data
         )

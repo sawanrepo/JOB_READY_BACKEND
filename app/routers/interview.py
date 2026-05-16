@@ -73,8 +73,10 @@ async def get_session_status(
         session_id=session.id,
         question=session.current_question or "Starting interview...",
         question_number=session.question_number,
-        total_questions=8,
-        interview_ended=not session.is_active
+        total_questions=10 if session.interview_type == "audio" else 8,
+        interview_ended=not session.is_active,
+        warnings_count=session.warnings_count or 0,
+        is_active=session.is_active
     )
 
 
@@ -206,18 +208,67 @@ async def get_latest_history(
 
 
 @router.get("/{session_id}/result", response_model=InterviewResult)
+@limiter.limit("10/minute")
+async def get_result_by_session(
+    request: Request,
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetches a specific interview result from history using session_id. 
+    Works for both audio and video interviews.
+    """
+    stmt = select(DBInterviewResult).where(
+        DBInterviewResult.session_id == session_id,
+        DBInterviewResult.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    db_result = result.scalar_one_or_none()
+    
+    if db_result:
+        return db_result.result_data
+
+    # Fallback: check if session still exists and needs generation
+    session_stmt = select(InterviewSession).where(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id
+    )
+    session_res = await db.execute(session_stmt)
+    session = session_res.scalar_one_or_none()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Result or session not found")
+        
+    # If session exists but result doesn't, trigger generation based on type
+    if session.interview_type == "video":
+        return await get_result(request, session_id, current_user, db)
+    elif session.interview_type == "audio":
+        from app.routers.audio_interview import get_audio_result
+        return await get_audio_result(request, session_id, current_user, db)
+    
+    raise HTTPException(status_code=404, detail="Unknown interview type")
+
+
+@router.post("/{session_id}/result", response_model=InterviewResult)
 @limiter.limit("5/minute")
 async def get_result(
     request: Request,
     session_id: str,
-    # Fix #2: require authenticated user
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     try:
+        # Check if result already exists (avoid re-generating if refresh happens during generation)
+        existing_stmt = select(DBInterviewResult).where(
+            DBInterviewResult.session_id == session_id,
+            DBInterviewResult.user_id == current_user.id
+        )
+        existing_res = await db.execute(existing_stmt)
+        if existing_db_res := existing_res.scalar_one_or_none():
+            return existing_db_res.result_data
+
         result_data = await interview_service.generate_result(db, session_id)
 
-        
         # Delete previous video results for this user
         delete_stmt = delete(DBInterviewResult).where(
             DBInterviewResult.user_id == current_user.id,
@@ -225,9 +276,10 @@ async def get_result(
         )
         await db.execute(delete_stmt)
         
-        # Save to DB
+        # Save to DB with session_id
         db_result = DBInterviewResult(
             user_id=current_user.id,
+            session_id=session_id, # Persistent for refresh
             interview_type="video",
             result_data=result_data
         )
@@ -238,7 +290,6 @@ async def get_result(
         await db.execute(session_delete_stmt)
         
         await db.commit()
-
         
         return result_data
     except ValueError as e:

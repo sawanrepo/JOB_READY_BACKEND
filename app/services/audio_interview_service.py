@@ -5,9 +5,10 @@ import asyncio
 import uuid
 import boto3
 import httpx
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 from app.config import settings
 from app.schemas.interview import InterviewStartRequest, InterviewResult
 from app.prompts import AUDIO_INTERVIEW_QUESTIONS_PROMPT, AUDIO_INTERVIEW_REPORT_PROMPT
@@ -17,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 class AudioInterviewService:
     def __init__(self):
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        self.model = genai.GenerativeModel('gemini-2.5-flash')
+        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        self.model_id = 'gemini-2.5-flash'
         
         # AWS Clients
         try:
@@ -45,6 +46,7 @@ class AudioInterviewService:
         # Check for any existing active session for this user
         existing_stmt = select(InterviewSession).where(
             InterviewSession.user_id == user_id,
+            InterviewSession.interview_type == "audio",
             InterviewSession.is_active == True
         )
         existing_result = await db.execute(existing_stmt)
@@ -52,7 +54,7 @@ class AudioInterviewService:
             from fastapi import HTTPException
             raise HTTPException(
                 status_code=400, 
-                detail="You already have an active interview session. Please complete or resume it before starting a new one."
+                detail="You already have an active audio interview session. Please complete or resume it before starting a new one."
             )
 
         session_id = os.urandom(4).hex()
@@ -64,10 +66,11 @@ class AudioInterviewService:
         )
         
         try:
-            logger.info(">>> LLM CALL START [start_audio_interview] | Model: gemini-2.5-flash")
-            response = await self.model.generate_content_async(
-                prompt,
-                generation_config={"temperature": 0.8}
+            logger.info(">>> LLM CALL START [start_audio_interview] | Model: %s", self.model_id)
+            response = await self.client.aio.models.generate_content(
+                model=self.model_id,
+                contents=prompt,
+                config=types.GenerateContentConfig(temperature=0.8)
             )
             logger.info("<<< LLM CALL SUCCESS [start_audio_interview]")
             content = response.text.strip()
@@ -226,6 +229,12 @@ class AudioInterviewService:
         
         if not session:
             raise ValueError("Invalid session ID")
+
+        # DISCARD logic: No result if warnings reach 5
+        if (session.warnings_count or 0) >= 5:
+            session.is_active = False
+            await db.commit()
+            raise ValueError("Interview discarded due to malpractice (too many warnings). No result generated.")
         
         # Wait for any pending STT jobs (simplified: just check if history length matches questions)
         # In a production app, we might want a more robust way to track pending jobs.
@@ -247,11 +256,10 @@ class AudioInterviewService:
         )
         
         try:
-            generation_config = {"response_mime_type": "application/json"}
-            # We don't need to send the audio file anymore as we have transcripts
-            response = await self.model.generate_content_async(
-                contents=[prompt],
-                generation_config=generation_config
+            response = await self.client.aio.models.generate_content(
+                model=self.model_id,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
             )
             session.is_active = False # Deactivate after completion
             raw_result = json.loads(response.text)

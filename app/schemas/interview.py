@@ -11,6 +11,8 @@ class InterviewResponse(BaseModel):
     question_number: int
     total_questions: int = 8
     interview_ended: bool = False
+    warnings_count: int = 0
+    is_active: bool = True
 
 class InterviewResult(BaseModel):
     communication_score: int

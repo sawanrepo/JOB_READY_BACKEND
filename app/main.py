@@ -41,6 +41,9 @@ app = FastAPI(
     description="Backend for Job Ready application",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None
 )
 
 # Fix #18: restrict CORS to only the methods and headers the API actually uses
