@@ -73,7 +73,7 @@ def render_latex_template(content: dict) -> str:
         print(f"[ERROR] Template rendering failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Template rendering failed: {str(e)}")
 
-def compile_latex_to_pdf(tex_content: str, output_dir: str = "output") -> str:
+def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: dict = None) -> str:
     os.makedirs(output_dir, exist_ok=True)
     filename = f"resume_{uuid.uuid4()}"
     pdf_path = os.path.join(output_dir, f"{filename}.pdf")
@@ -84,19 +84,11 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output") -> str:
     templates_dir = os.path.join(PROJECT_ROOT, "app", "templates")
     
     try:
-        # Write LaTeX content to file
+        # Define paths
         tex_filename = f"{filename}.tex"
         tex_work_path = os.path.join(work_dir, tex_filename)
+        log_work_path = os.path.join(work_dir, f"{filename}.log")
         
-        with open(tex_work_path, "w", encoding="utf-8") as f:
-            f.write(tex_content)
-            
-        # DEBUG: Save a copy of the LaTeX content
-        debug_tex_path = os.path.join(output_dir, f"{filename}.tex")
-        with open(debug_tex_path, "w", encoding="utf-8") as f:
-            f.write(tex_content)
-        print(f"[DEBUG] Saved LaTeX file at: {debug_tex_path}")
-            
         # Copy all dependencies to working directory
         altacv_src = os.path.join(templates_dir, "altacv")
         altacv_dest = os.path.join(work_dir, "altacv")
@@ -106,28 +98,132 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output") -> str:
         if not os.path.exists(os.path.join(altacv_dest, "altacv.cls")):
             raise FileNotFoundError("altacv.cls not found in working directory")
         
-        # Run LaTeX compilation
         latex_command = settings.LATEX_PATH
         
-        # Run compilation twice to resolve references
-        last_result = None
-        for i in range(2):
+        # Presets definition
+        preset_standard = {"fontsize": "10pt", "margin": "0.7in", "itemsep": "3pt", "sectionspace": "0.5em"}
+        preset_tightest = {"fontsize": "10pt", "margin": "0.5in", "itemsep": "1pt", "sectionspace": "0.3em"}
+        
+        selected_preset = preset_standard
+        current_tex_content = tex_content
+        
+        if content:
+            print("[DEBUG] Smart spacing: Compiling with standard preset (Pass 1)...")
+            content_std = dict(content)
+            content_std.update(preset_standard)
+            tex_std = render_latex_template(content_std)
+            
+            with open(tex_work_path, "w", encoding="utf-8") as f:
+                f.write(tex_std)
+                
             result = subprocess.run(
                 [latex_command, "-interaction=nonstopmode", tex_filename],
                 cwd=work_dir,
                 capture_output=True,
                 text=True,
             )
-            last_result = result
             
-            # If compilation fails, break immediately
-            if result.returncode != 0:
-                print(f"[ERROR] LaTeX compilation failed on pass #{i+1}")
-                print(f"Exit code: {result.returncode}")
-                print(f"STDOUT:\n{result.stdout}")
-                print(f"STDERR:\n{result.stderr}")
-                break
+            pages_std = 1
+            if os.path.exists(log_work_path):
+                with open(log_work_path, "r", errors="ignore") as lf:
+                    log_data = lf.read()
+                page_match = re.search(r"Output written on .*?\.pdf \((\d+) pages?", log_data)
+                if page_match:
+                    pages_std = int(page_match.group(1))
+            print(f"[DEBUG] Standard preset resulted in {pages_std} page(s)")
+            
+            if pages_std == 2:
+                print("[DEBUG] Smart spacing: Attempting to squeeze 2 pages to 1 page...")
+                content_tight = dict(content)
+                content_tight.update(preset_tightest)
+                tex_tight = render_latex_template(content_tight)
+                
+                with open(tex_work_path, "w", encoding="utf-8") as f:
+                    f.write(tex_tight)
+                    
+                result = subprocess.run(
+                    [latex_command, "-interaction=nonstopmode", tex_filename],
+                    cwd=work_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                
+                pages_tight = 2
+                if os.path.exists(log_work_path):
+                    with open(log_work_path, "r", errors="ignore") as lf:
+                        log_data = lf.read()
+                    page_match = re.search(r"Output written on .*?\.pdf \((\d+) pages?", log_data)
+                    if page_match:
+                        pages_tight = int(page_match.group(1))
+                print(f"[DEBUG] Tightest preset resulted in {pages_tight} page(s)")
+                
+                if pages_tight == 1:
+                    print("[DEBUG] Smart spacing: Successfully squeezed to 1 page!")
+                    selected_preset = preset_tightest
+                    current_tex_content = tex_tight
+                else:
+                    print("[DEBUG] Smart spacing: Genuine 2-page resume. Keeping standard preset.")
+                    selected_preset = preset_standard
+                    current_tex_content = tex_std
+                    
+            elif pages_std >= 3:
+                print("[DEBUG] Smart spacing: Attempting to squeeze 3+ pages to 2 pages...")
+                content_tight = dict(content)
+                content_tight.update(preset_tightest)
+                tex_tight = render_latex_template(content_tight)
+                
+                with open(tex_work_path, "w", encoding="utf-8") as f:
+                    f.write(tex_tight)
+                    
+                result = subprocess.run(
+                    [latex_command, "-interaction=nonstopmode", tex_filename],
+                    cwd=work_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                
+                pages_tight = 3
+                if os.path.exists(log_work_path):
+                    with open(log_work_path, "r", errors="ignore") as lf:
+                        log_data = lf.read()
+                    page_match = re.search(r"Output written on .*?\.pdf \((\d+) pages?", log_data)
+                    if page_match:
+                        pages_tight = int(page_match.group(1))
+                print(f"[DEBUG] Tightest preset resulted in {pages_tight} page(s)")
+                
+                if pages_tight <= 2:
+                    print(f"[DEBUG] Smart spacing: Successfully squeezed to {pages_tight} page(s)!")
+                    selected_preset = preset_tightest
+                    current_tex_content = tex_tight
+                else:
+                    print("[DEBUG] Smart spacing: Keeping standard preset.")
+                    selected_preset = preset_standard
+                    current_tex_content = tex_std
+            else:
+                selected_preset = preset_standard
+                current_tex_content = tex_std
+        else:
+            selected_preset = None
+            current_tex_content = tex_content
 
+        # Write final selected LaTeX source and run second pass to resolve references/page bounds
+        with open(tex_work_path, "w", encoding="utf-8") as f:
+            f.write(current_tex_content)
+            
+        # DEBUG: Save a copy of the LaTeX content
+        debug_tex_path = os.path.join(output_dir, f"{filename}.tex")
+        with open(debug_tex_path, "w", encoding="utf-8") as f:
+            f.write(current_tex_content)
+        print(f"[DEBUG] Saved final LaTeX file at: {debug_tex_path}")
+            
+        print("[DEBUG] Running final LaTeX pass...")
+        last_result = subprocess.run(
+            [latex_command, "-interaction=nonstopmode", tex_filename],
+            cwd=work_dir,
+            capture_output=True,
+            text=True,
+        )
+        
         # Check if PDF was generated
         pdf_work_path = os.path.join(work_dir, f"{filename}.pdf")
         

@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
-from app.schemas.resume import ResumeAnalysisResponse, TailoredResumeResponse
-from app.services.resume import run_analyze_resume, tailor_resume
+from app.schemas.resume import ResumeAnalysisResponse, TailoredResumeResponse, TailoredContent
+from app.services.resume import run_analyze_resume, tailor_resume, propose_tailor_resume, generate_tailored_pdf
 from app.routers.auth import get_current_user
 from app.models.user import User
 from app.utils.file import extract_text_from_pdf
 import os
+import logging
 from pathlib import Path
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,8 @@ from sqlalchemy import select, delete, desc
 from app.database import get_db
 from app.models.resume import ResumeHistory as DBResumeHistory
 from app.utils.usage import can_use_feature_async, deduct_feature_usage_atomic, refund_feature_usage_atomic
+
+logger = logging.getLogger(__name__)
 
 
 from app.utils.validation import validate_job_description, validate_resume_text
@@ -39,7 +42,7 @@ async def ats_check(
     validate_job_description(job_description)
 
     # 1. Deduct first to prevent race conditions
-    await deduct_feature_usage_atomic(db, current_user.id, "ats_check")
+    credit_type = await deduct_feature_usage_atomic(db, current_user.id, "ats_check")
     await db.commit() # Save deduction immediately
     
     try:
@@ -57,7 +60,7 @@ async def ats_check(
         result = ResumeAnalysisResponse(**result_dict)
     except Exception as e:
         # 4. Refund on failure
-        await refund_feature_usage_atomic(db, current_user.id, "ats_check")
+        await refund_feature_usage_atomic(db, current_user.id, "ats_check", credit_type)
         await db.commit()
         if isinstance(e, HTTPException):
             raise e
@@ -102,7 +105,7 @@ async def tailor_resume_endpoint(
     validate_job_description(job_description)
     
     # 1. Deduct first to prevent race conditions
-    await deduct_feature_usage_atomic(db, current_user.id, "resume_tailoring")
+    credit_type = await deduct_feature_usage_atomic(db, current_user.id, "resume_tailoring")
     await db.commit() # Save deduction immediately
 
     try:
@@ -120,7 +123,7 @@ async def tailor_resume_endpoint(
         result = TailoredResumeResponse(**result_dict)
     except Exception as e:
         # 4. Refund on failure
-        await refund_feature_usage_atomic(db, current_user.id, "resume_tailoring")
+        await refund_feature_usage_atomic(db, current_user.id, "resume_tailoring", credit_type)
         await db.commit()
         if isinstance(e, HTTPException):
             raise e
@@ -157,6 +160,137 @@ async def tailor_resume_endpoint(
         history_type="tailor",
         result_data={"filename": result["filename"]}, # Store metadata
         file_path=result["filename"] # Link to the file in output/
+    )
+    db.add(new_history)
+    
+    await db.commit()
+    return result
+
+@router.post("/tailor-resume/propose", response_model=TailoredContent)
+@limiter.limit("5/minute")
+async def tailor_resume_propose_endpoint(
+    request: Request,
+    resume_pdf: UploadFile = File(...),
+    job_description: str = Form(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if not await can_use_feature_async(db, current_user.id, "resume_tailoring"):
+        raise HTTPException(status_code=403, detail="Resume tailoring limit reached. Upgrade plan or wait for reset.")
+
+    validate_job_description(job_description)
+    
+    # 1. Deduct first to prevent race conditions
+    credit_type = await deduct_feature_usage_atomic(db, current_user.id, "resume_tailoring")
+    await db.commit() # Save deduction immediately
+
+    try:
+        # 2. Extract and Validate
+        resume_text = await extract_text_from_pdf(resume_pdf)
+        validate_resume_text(resume_text)
+
+        # 3. AI Proposing
+        tailored_content = await propose_tailor_resume(resume_text, job_description)
+        
+        # Check if AI identified it as a non-resume
+        if not tailored_content.get("is_resume", True):
+            raise HTTPException(status_code=400, detail=tailored_content.get("error_message", "The uploaded PDF does not appear to be a valid resume."))
+
+        # 3.5 Generate Default PDF using raw AI output and save to history immediately
+        try:
+            result_dict = await generate_tailored_pdf(tailored_content)
+            
+            # Clean up old tailor file
+            old_tailor_stmt = select(DBResumeHistory).where(
+                DBResumeHistory.user_id == current_user.id,
+                DBResumeHistory.history_type == "tailor"
+            )
+            old_tailor = (await db.execute(old_tailor_stmt)).scalar_one_or_none()
+            if old_tailor and old_tailor.file_path:
+                old_file_path = OUTPUT_DIR / old_tailor.file_path
+                if old_file_path.exists():
+                    try:
+                        os.remove(old_file_path)
+                    except Exception as e:
+                        logger.error(f"Error deleting old resume file during propose: {e}")
+            
+            # Delete old database history record
+            delete_stmt = delete(DBResumeHistory).where(
+                DBResumeHistory.user_id == current_user.id,
+                DBResumeHistory.history_type == "tailor"
+            )
+            await db.execute(delete_stmt)
+            
+            # Save new history record
+            new_history = DBResumeHistory(
+                user_id=current_user.id,
+                history_type="tailor",
+                result_data={"filename": result_dict["filename"]},
+                file_path=result_dict["filename"]
+            )
+            db.add(new_history)
+            await db.commit()
+        except Exception as pdf_err:
+            logger.error("Failed to generate default PDF during propose: %s", pdf_err)
+
+        return tailored_content
+    except Exception as e:
+        # 4. Refund on failure
+        await refund_feature_usage_atomic(db, current_user.id, "resume_tailoring", credit_type)
+        await db.commit()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Resume tailoring proposal failed: {str(e)}")
+
+@router.post("/tailor-resume/generate", response_model=TailoredResumeResponse)
+@limiter.limit("5/minute")
+async def tailor_resume_generate_endpoint(
+    request: Request,
+    tailored_content: TailoredContent,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        content_dict = tailored_content.model_dump()
+        result_dict = await generate_tailored_pdf(content_dict)
+        
+        result = TailoredResumeResponse(
+            tailored_content=tailored_content,
+            filename=result_dict["filename"],
+            pdf_url=result_dict["pdf_url"],
+            is_resume=True
+        )
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Resume tailoring compilation failed: {str(e)}")
+
+    # Update History: Delete old tailor and save new one
+    old_tailor_stmt = select(DBResumeHistory).where(
+        DBResumeHistory.user_id == current_user.id,
+        DBResumeHistory.history_type == "tailor"
+    )
+    old_tailor = (await db.execute(old_tailor_stmt)).scalar_one_or_none()
+    
+    if old_tailor and old_tailor.file_path:
+        old_file_path = OUTPUT_DIR / old_tailor.file_path
+        if old_file_path.exists():
+            try:
+                os.remove(old_file_path)
+            except Exception as e:
+                logger.error(f"Error deleting old resume file: {e}")
+
+    delete_stmt = delete(DBResumeHistory).where(
+        DBResumeHistory.user_id == current_user.id,
+        DBResumeHistory.history_type == "tailor"
+    )
+    await db.execute(delete_stmt)
+    
+    new_history = DBResumeHistory(
+        user_id=current_user.id,
+        history_type="tailor",
+        result_data={"filename": result.filename},
+        file_path=result.filename
     )
     db.add(new_history)
     

@@ -46,7 +46,7 @@ async def create_order(plan: str, current_user: User = Depends(get_current_user)
         "amount": PLAN_PRICES[plan]["amount"],
         "currency": "INR",
         "payment_capture": 1,
-        "notes": {"user_id": str(current_user.id)}
+        "notes": {"user_id": str(current_user.id), "plan_name": plan}
     })
 
     return {
@@ -84,6 +84,26 @@ async def verify_payment(
     if not hmac.compare_digest(generated_signature, razorpay_signature):
         logger.warning("Payment signature mismatch for order %s", razorpay_order_id)
         raise HTTPException(status_code=400, detail="Invalid signature")
+
+    try:
+        # Fetch order from Razorpay to verify details and prevent spoofing
+        razorpay_order = client.order.fetch(razorpay_order_id)
+        order_notes = razorpay_order.get("notes", {})
+        trusted_plan = order_notes.get("plan_name")
+        trusted_user_id = order_notes.get("user_id")
+
+        if trusted_user_id and str(current_user.id) != trusted_user_id:
+            logger.warning("User %s trying to verify order created for %s", current_user.id, trusted_user_id)
+            raise HTTPException(status_code=403, detail="Order belongs to a different user")
+
+        if trusted_plan:
+            plan_name = trusted_plan # Override frontend provided plan name with the trusted one
+            
+    except Exception as e:
+        logger.error(f"Error fetching order from Razorpay: {e}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail="Could not verify order details with payment gateway")
 
     user = current_user
 

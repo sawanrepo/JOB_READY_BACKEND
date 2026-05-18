@@ -1,6 +1,8 @@
-\documentclass[10pt]{article}
+
+
+\documentclass[\VAR{content.fontsize | default("10pt")}]{article}
 \usepackage{parskip}
-\usepackage[a4paper, margin=1in]{geometry}
+\usepackage[a4paper, margin=\VAR{content.margin | default("0.7in")}]{geometry}
 \usepackage{titlesec}
 \usepackage{xcolor}
 \usepackage{enumitem}
@@ -8,6 +10,8 @@
 \usepackage{fontawesome}
 
 \titleformat{\section}{\large\bfseries\color{blue}}{}{0em}{}[\titlerule]
+\setlist[itemize]{leftmargin=1.2em, itemsep=\VAR{content.itemsep | default("3pt")}, parsep=0pt, topsep=2pt, partopsep=0pt}
+\newcommand{\sectionspace}{\vspace{\VAR{content.sectionspace | default("0.5em")}}}
 
 \begin{document}
 
@@ -51,7 +55,7 @@
     
 \end{center}
 
-\vspace{0.5em}
+\sectionspace
 
 %====================
 % Summary
@@ -66,7 +70,7 @@
 %====================
 \BLOCK{ if content.skills }
 \section*{Skills}
-\begin{itemize}[leftmargin=1em]
+\begin{itemize}
     \BLOCK{ for category, skills in content.skills.items() }
         \item \textbf{\VAR{category}}: \VAR{skills | join(', ')}
     \BLOCK{ endfor }
@@ -81,12 +85,12 @@
 \BLOCK{ for exp in content.experience }
 \textbf{\VAR{exp.role}} \hfill \VAR{exp.duration}\\
 \VAR{exp.company}\\
-\begin{itemize}[leftmargin=1em]
+\begin{itemize}
     \BLOCK{ for point in exp.details }
         \item \VAR{point}
     \BLOCK{ endfor }
 \end{itemize}
-\vspace{0.5em}
+\sectionspace
 \BLOCK{ endfor }
 \BLOCK{ endif }
 
@@ -98,12 +102,12 @@
 \BLOCK{ for project in content.projects }
 \textbf{\VAR{project.title}}\\
 \textit{Tech Stack:} \VAR{project["tech\\_stack"] | default("N/A")}
-\begin{itemize}[leftmargin=1em]
+\begin{itemize}
     \BLOCK{ for detail in project.details }
         \item \VAR{detail}
     \BLOCK{ endfor }
 \end{itemize}
-\vspace{0.5em}
+\sectionspace
 \BLOCK{ endfor }
 \BLOCK{ endif }
 
@@ -125,7 +129,7 @@
 \BLOCK{ if edu.grade }
     \textit{Grade:} \VAR{edu.grade}
 \BLOCK{ endif }
-\vspace{0.5em}
+\sectionspace
 \BLOCK{ endfor }
 \BLOCK{ endif }
 
@@ -134,7 +138,7 @@
 %====================
 \BLOCK{ if content.certifications }
 \section*{Certifications}
-\begin{itemize}[leftmargin=1em]
+\begin{itemize}
     \BLOCK{ for cert in content.certifications }
         \item \textbf{\VAR{cert.title}} \hfill \VAR{cert.date}
     \BLOCK{ endfor }

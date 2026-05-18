@@ -42,6 +42,50 @@ class AudioInterviewService:
             self.s3 = None
             self.transcribe = None
 
+    async def _generate_content_with_fallback(self, prompt: str, system_instruction: str = None, response_mime_type: str = None, temperature: float = 0.8) -> str:
+        # Try gemini-2.5-flash first, then try highly stable and lite backups
+        models = [
+            'gemini-2.5-flash',
+            'gemini-1.5-flash',
+            'gemini-3.1-flash-lite-preview'
+        ]
+        
+        last_err = None
+        for model in models:
+            try:
+                logger.info(">>> LLM CALL START | Model: %s | Prompt chars: %d", model, len(prompt))
+                config_args = {"temperature": temperature}
+                if system_instruction:
+                    config_args["system_instruction"] = system_instruction
+                if response_mime_type:
+                    config_args["response_mime_type"] = response_mime_type
+                    
+                response = await self.client.aio.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(**config_args)
+                )
+                logger.info("<<< LLM CALL SUCCESS | Model: %s", model)
+                return response.text
+            except Exception as e:
+                logger.warning("LLM call failed for model %s: %s. Trying backup model...", model, e)
+                last_err = e
+        
+        # If all models failed, raise clean exception
+        err_str = str(last_err)
+        from fastapi import HTTPException
+        if "429" in err_str or "quota" in err_str.lower():
+            raise HTTPException(
+                status_code=429,
+                detail="AI service is temporarily rate-limited. Please wait a moment and try again."
+            )
+        if "503" in err_str or "overloaded" in err_str.lower() or "experiencing high demand" in err_str.lower():
+            raise HTTPException(
+                status_code=503,
+                detail="AI service is temporarily experiencing high demand. Please try again shortly."
+            )
+        raise HTTPException(status_code=500, detail=f"AI service error: {err_str}")
+
     async def start_audio_interview(self, db: AsyncSession, user_id: int, request: InterviewStartRequest) -> dict:
         # Check for any existing active session for this user
         existing_stmt = select(InterviewSession).where(
@@ -66,14 +110,11 @@ class AudioInterviewService:
         )
         
         try:
-            logger.info(">>> LLM CALL START [start_audio_interview] | Model: %s", self.model_id)
-            response = await self.client.aio.models.generate_content(
-                model=self.model_id,
-                contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.8)
+            content_text = await self._generate_content_with_fallback(
+                prompt=prompt,
+                temperature=0.8
             )
-            logger.info("<<< LLM CALL SUCCESS [start_audio_interview]")
-            content = response.text.strip()
+            content = content_text.strip()
             if content.startswith("```json"):
                 content = content[7:-3].strip()
             elif content.startswith("```"):
@@ -81,7 +122,10 @@ class AudioInterviewService:
             questions = json.loads(content)
         except Exception as e:
             logger.error("!!! LLM CALL FAILED [start_audio_interview]: %s", e, exc_info=True)
-            raise ValueError("Failed to generate questions. Please try again.")
+            from fastapi import HTTPException
+            if isinstance(e, HTTPException):
+                raise e
+            raise ValueError(f"Failed to generate questions: {str(e)}")
 
         if not isinstance(questions, list) or len(questions) == 0:
             raise ValueError("Invalid questions format returned by AI.")
@@ -176,32 +220,57 @@ class AudioInterviewService:
             async with httpx.AsyncClient() as client:
                 res = await client.get(transcript_uri)
                 res_json = res.json()
-                transcript_text = res_json['results']['transcripts'][0]['transcript']
+                raw_transcript = res_json['results']['transcripts'][0]['transcript']
+                # Handle empty or whitespace-only audio
+                transcript_text = raw_transcript.strip() if raw_transcript.strip() else "(No audible response provided)"
             
-            # 5. Update DB History
+            # 5. Update DB History with Row Locking to prevent race conditions
             async with db_factory() as db:
-                stmt = select(InterviewSession).where(InterviewSession.id == session_id)
+                # SELECT FOR UPDATE locks this row so other background tasks wait
+                stmt = select(InterviewSession).where(InterviewSession.id == session_id).with_for_update()
                 res = await db.execute(stmt)
                 session = res.scalar_one_or_none()
+                
                 if session:
+                    # Make a copy to avoid mutation issues before commit
                     history = list(session.history or [])
-                    # Ensure history has enough space (fill gaps if needed)
+                    
+                    # Ensure history has enough space
                     while len(history) <= question_index:
                         history.append(None)
                     
                     history[question_index] = {
                         "question": question_text,
                         "answer_text": transcript_text,
-                        "timestamp": str(uuid.uuid4()) # For uniqueness
+                        "timestamp": str(uuid.uuid4())
                     }
+                    
+                    # Explicitly assign to trigger SQLAlchemy change detection
                     session.history = history
                     await db.commit()
+                    logger.info(f"STT complete and history updated for session {session_id}, Q{question_index}")
+                else:
+                    logger.warning(f"Session {session_id} not found during history update")
             
-            logger.info(f"STT complete for session {session_id}, Q{question_index}")
-            
-            # 6. Cleanup S3 and Transcribe Job
+        except Exception as e:
+            logger.error(f"STT Error for session {session_id}, Q{question_index}: {e}", exc_info=True)
+            # Optional: Mark this question as failed in history so generate_result doesn't wait forever
             try:
-                logger.info(f"Cleaning up S3 and Transcribe job for {job_name}")
+                async with db_factory() as db:
+                    stmt = select(InterviewSession).where(InterviewSession.id == session_id).with_for_update()
+                    res = await db.execute(stmt)
+                    session = res.scalar_one_or_none()
+                    if session:
+                        history = list(session.history or [])
+                        while len(history) <= question_index: history.append(None)
+                        history[question_index] = {"question": question_text, "answer_text": "[STT Failed]", "error": str(e)}
+                        session.history = history
+                        await db.commit()
+            except Exception as inner_e:
+                logger.error(f"Failed to mark STT error: {inner_e}")
+
+            # Cleanup S3 and Transcribe to prevent resource leaks
+            try:
                 await asyncio.to_thread(
                     self.s3.delete_object,
                     Bucket=settings.AWS_S3_BUCKET_NAME,
@@ -211,8 +280,9 @@ class AudioInterviewService:
                     self.transcribe.delete_transcription_job,
                     TranscriptionJobName=job_name
                 )
-            except Exception as cleanup_err:
-                logger.warning(f"Cleanup failed for STT job {job_name}: {cleanup_err}")
+                logger.info(f"Cleaned up S3 and Transcribe for {job_name}")
+            except Exception as cleanup_e:
+                logger.error(f"Failed to cleanup S3/Transcribe for {job_name}: {cleanup_e}")
 
         except Exception as e:
             logger.error(f"STT Error for session {session_id}, Q{question_index}: {e}", exc_info=True)
@@ -238,11 +308,20 @@ class AudioInterviewService:
         
         # Wait for any pending STT jobs (simplified: just check if history length matches questions)
         # In a production app, we might want a more robust way to track pending jobs.
-        max_retries = 12 # 1 minute max wait
-        while len([h for h in (session.history or []) if h is not None]) < len(session.questions or []):
-            if max_retries <= 0:
+        # Wait for any pending STT jobs
+        # We consider a job "pending" if the history index is None or if it's explicitly marked as an error.
+        max_retries = 10 # ~50 seconds max wait
+        while True:
+            history = session.history or []
+            questions = session.questions or []
+            
+            # Count entries that are either results or errors
+            completed_count = len([h for h in history if h is not None])
+            
+            if completed_count >= len(questions) or max_retries <= 0:
                 break
-            logger.info(f"Waiting for STT jobs to complete... {len(session.history)}/10")
+                
+            logger.info(f"Waiting for STT jobs... {completed_count}/{len(questions)} (Retries left: {max_retries})")
             await asyncio.sleep(5)
             await db.refresh(session)
             max_retries -= 1
@@ -256,13 +335,12 @@ class AudioInterviewService:
         )
         
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_id,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json")
+            content_text = await self._generate_content_with_fallback(
+                prompt=prompt,
+                response_mime_type="application/json"
             )
             session.is_active = False # Deactivate after completion
-            raw_result = json.loads(response.text)
+            raw_result = json.loads(content_text)
             
             sanitized = {
                 "communication_score": raw_result.get("communication_score") or 0,

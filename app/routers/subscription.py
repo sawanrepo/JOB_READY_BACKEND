@@ -11,10 +11,7 @@ router = APIRouter()
 
 @router.post("/subscribe/{plan_name}")
 async def subscribe(plan_name: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    #Block if already subscribed and not expired
-    if current_user.subscription_id != 1 and current_user.subscription_expires_at and current_user.subscription_expires_at > datetime.now(timezone.utc):
-        raise HTTPException(status_code=400, detail="Active subscription already exists.")
-
+    # Get plan first
     plan = await db.execute(
         select(SubscriptionPlan).where(SubscriptionPlan.name == plan_name)
     )
@@ -22,6 +19,10 @@ async def subscribe(plan_name: str, current_user: User = Depends(get_current_use
 
     if not plan:
         raise HTTPException(status_code=404, detail="Subscription plan not found")
+
+    # Allow if currently on free plan or if the new plan is different
+    if current_user.subscription_id == plan.id and current_user.subscription_expires_at and current_user.subscription_expires_at > datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail=f"You are already subscribed to the {plan_name} plan.")
 
     current_user.subscription_id = plan.id
     current_user.subscription_expires_at = datetime.now(timezone.utc) + timedelta(days=30)

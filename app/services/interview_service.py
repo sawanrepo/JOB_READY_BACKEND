@@ -18,6 +18,50 @@ class InterviewService:
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
         self.model_id = 'gemini-2.5-flash'
 
+    async def _generate_content_with_fallback(self, prompt: str, system_instruction: str = None, response_mime_type: str = None, temperature: float = 0.8) -> str:
+        # Try gemini-2.5-flash first, then try highly stable backups
+        models = [
+            'gemini-2.5-flash',
+            'gemini-1.5-flash',
+            'gemini-3.1-flash-lite-preview'
+        ]
+        
+        last_err = None
+        for model in models:
+            try:
+                logger.info(">>> LLM CALL START | Model: %s | Prompt chars: %d", model, len(prompt))
+                config_args = {"temperature": temperature}
+                if system_instruction:
+                    config_args["system_instruction"] = system_instruction
+                if response_mime_type:
+                    config_args["response_mime_type"] = response_mime_type
+                    
+                response = await self.client.aio.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(**config_args)
+                )
+                logger.info("<<< LLM CALL SUCCESS | Model: %s", model)
+                return response.text
+            except Exception as e:
+                logger.warning("LLM call failed for model %s: %s. Trying fallback...", model, e)
+                last_err = e
+        
+        # If all models failed, raise clean exception
+        err_str = str(last_err)
+        from fastapi import HTTPException
+        if "429" in err_str or "quota" in err_str.lower():
+            raise HTTPException(
+                status_code=429,
+                detail="AI service is temporarily rate-limited. Please wait a moment and try again."
+            )
+        if "503" in err_str or "overloaded" in err_str.lower() or "experiencing high demand" in err_str.lower():
+            raise HTTPException(
+                status_code=503,
+                detail="AI service is temporarily experiencing high demand. Please try again shortly."
+            )
+        raise HTTPException(status_code=500, detail=f"AI service error: {err_str}")
+
     async def start_interview(self, db: AsyncSession, user_id: int, request: InterviewStartRequest) -> InterviewResponse:
         # Check for any existing active session for this user
         existing_stmt = select(InterviewSession).where(
@@ -123,24 +167,20 @@ class InterviewService:
         )
         
         try:
-            logger.info(">>> LLM CALL START [_generate_next_question] | Model: %s | Prompt chars: %d", self.model_id, len(prompt))
-            response = await self.client.aio.models.generate_content(
-                model=self.model_id,
-                contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.8)
+            next_q = await self._generate_content_with_fallback(
+                prompt=prompt,
+                temperature=0.8
             )
-            logger.info("<<< LLM CALL SUCCESS [_generate_next_question]")
         except Exception as e:
             logger.error("!!! LLM CALL FAILED [_generate_next_question]: %s", e, exc_info=True)
             raise
             
-        next_q = response.text.strip()
-        session.current_question = next_q
-        return next_q
+        session.current_question = next_q.strip()
+        return session.current_question
 
     async def _analyze_video(self, video_path: str, question: str) -> str:
         logger.info(f"Uploading video {video_path} to Gemini...")
-        video_file = await self.client.aio.files.upload(path=video_path)
+        video_file = await self.client.aio.files.upload(file=video_path)
         
         while True:
              file_info = await self.client.aio.files.get(name=video_file.name)
@@ -152,15 +192,41 @@ class InterviewService:
              raise ValueError("Video processing failed by Gemini")
 
         prompt = INTERVIEW_ANALYSIS_PROMPT.format(question=question)
-        try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_id,
-                contents=[prompt, video_file]
+        
+        # Fallback for video analysis call
+        models = [
+            'gemini-2.5-flash',
+            'gemini-1.5-flash',
+            'gemini-3.1-flash-lite-preview'
+        ]
+        
+        last_err = None
+        for model in models:
+            try:
+                logger.info(">>> LLM CALL START [_analyze_video] | Model: %s", model)
+                response = await self.client.aio.models.generate_content(
+                    model=model,
+                    contents=[prompt, video_file]
+                )
+                logger.info("<<< LLM CALL SUCCESS [_analyze_video] | Model: %s", model)
+                return response.text
+            except Exception as e:
+                logger.warning("LLM call failed for model %s during video analysis: %s. Trying fallback...", model, e)
+                last_err = e
+                
+        err_str = str(last_err)
+        from fastapi import HTTPException
+        if "429" in err_str or "quota" in err_str.lower():
+            raise HTTPException(
+                status_code=429,
+                detail="AI service is temporarily rate-limited. Please wait a moment and try again."
             )
-            return response.text
-        except Exception as e:
-            logger.error("!!! LLM CALL FAILED [_analyze_video]: %s", e, exc_info=True)
-            raise
+        if "503" in err_str or "overloaded" in err_str.lower() or "experiencing high demand" in err_str.lower():
+            raise HTTPException(
+                status_code=503,
+                detail="AI service is temporarily experiencing high demand. Please try again shortly."
+            )
+        raise HTTPException(status_code=500, detail=f"AI video analysis failed: {err_str}")
 
     async def generate_result(self, db: AsyncSession, session_id: str) -> InterviewResult:
         stmt = select(InterviewSession).where(InterviewSession.id == session_id)
@@ -185,13 +251,12 @@ class InterviewService:
         )
         
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_id,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json")
+            content_text = await self._generate_content_with_fallback(
+                prompt=prompt,
+                response_mime_type="application/json"
             )
             session.is_active = False # Deactivate after completion
-            raw_result = json.loads(response.text)
+            raw_result = json.loads(content_text)
             
             # Manual Sanitization to prevent ResponseValidationError
             sanitized = {
@@ -215,4 +280,7 @@ class InterviewService:
             return sanitized
         except Exception as e:
             logger.error("!!! LLM CALL FAILED [generate_result]: %s", e, exc_info=True)
+            from fastapi import HTTPException
+            if isinstance(e, HTTPException):
+                raise e
             raise ValueError("Failed to generate valid report JSON")

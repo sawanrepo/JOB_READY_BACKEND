@@ -17,14 +17,14 @@ from datetime import timedelta, datetime, timezone
 from app.config import settings
 import httpx
 from jose import JWTError
-import random
+import secrets
 import string
 import asyncio
 from app.utils.email import send_otp_email, send_password_reset_email
 
 
 def generate_otp(length=6):
-    return ''.join(random.choices(string.digits, k=length))
+    return ''.join(secrets.choice(string.digits) for _ in range(length))
 
 
 async def authenticate_user(email: str, password: str, db) -> User:
@@ -338,7 +338,14 @@ async def refresh_access_token(refresh_token: str, db) -> Token:
             data={"sub": user.email},
             expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         )
-        return Token(access_token=access_token, token_type="bearer", refresh_token=refresh_token)
+        return Token(
+            access_token=access_token,
+            token_type="bearer",
+            refresh_token=refresh_token,
+            user_id=user.id,
+            full_name=user.full_name,
+            email=user.email
+        )
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

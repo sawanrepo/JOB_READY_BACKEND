@@ -22,7 +22,7 @@ async def can_use_feature_async(db: AsyncSession, user_id: int, feature: str) ->
     return mapping.get(feature, 0) > 0
 
 
-async def deduct_feature_usage_atomic(db: AsyncSession, user_id: int, feature: str):
+async def deduct_feature_usage_atomic(db: AsyncSession, user_id: int, feature: str) -> str:
     """
     Deducts feature usage using a row-level lock to prevent race conditions.
     Raises HTTPException if credits are insufficient.
@@ -37,11 +37,15 @@ async def deduct_feature_usage_atomic(db: AsyncSession, user_id: int, feature: s
 
     now = datetime.now(timezone.utc)
     
+    credit_type = "daily"
+    
     if feature == "ats_check":
         if (user.ats_checks_left_today or 0) > 0:
             user.ats_checks_left_today -= 1
+            credit_type = "daily"
         elif (user.purchased_ats_credits or 0) > 0:
             user.purchased_ats_credits -= 1
+            credit_type = "purchased"
         else:
             raise HTTPException(status_code=403, detail="Insufficient ATS check credits.")
         user.last_ats_check_at = now
@@ -49,8 +53,10 @@ async def deduct_feature_usage_atomic(db: AsyncSession, user_id: int, feature: s
     elif feature == "resume_tailoring":
         if (user.resume_tailoring_left_this_week or 0) > 0:
             user.resume_tailoring_left_this_week -= 1
+            credit_type = "weekly"
         elif (user.purchased_tailor_credits or 0) > 0:
             user.purchased_tailor_credits -= 1
+            credit_type = "purchased"
         else:
             raise HTTPException(status_code=403, detail="Insufficient resume tailoring credits.")
         user.last_resume_tailoring_at = now
@@ -58,6 +64,7 @@ async def deduct_feature_usage_atomic(db: AsyncSession, user_id: int, feature: s
     elif feature == "mock_interview":
         if (user.mock_interviews_left or 0) > 0:
             user.mock_interviews_left -= 1
+            credit_type = "purchased"
         else:
             raise HTTPException(status_code=403, detail="Insufficient mock interview credits.")
         user.last_mock_interview_at = now
@@ -65,15 +72,17 @@ async def deduct_feature_usage_atomic(db: AsyncSession, user_id: int, feature: s
     elif feature == "audio_interview":
         if (user.audio_interviews_left or 0) > 0:
             user.audio_interviews_left -= 1
+            credit_type = "purchased"
         else:
             raise HTTPException(status_code=403, detail="Insufficient audio interview credits.")
         user.last_audio_interview_at = now
 
     # The changes are applied to the 'user' object which is tracked by the session.
     # They will be committed when db.commit() is called in the router.
+    return credit_type
 
 
-async def refund_feature_usage_atomic(db: AsyncSession, user_id: int, feature: str):
+async def refund_feature_usage_atomic(db: AsyncSession, user_id: int, feature: str, credit_type: str = "daily"):
     """
     Refunds a credit to the user if a task failed after deduction.
     Uses row-level locking for safety.
@@ -86,13 +95,16 @@ async def refund_feature_usage_atomic(db: AsyncSession, user_id: int, feature: s
         return 
 
     if feature == "ats_check":
-        # Increment daily or purchased credits
-        # If daily credits are used up, it's safer to just increment the daily one back.
-        # This keeps the logic simple.
-        user.ats_checks_left_today = (user.ats_checks_left_today or 0) + 1
+        if credit_type == "purchased":
+            user.purchased_ats_credits = (user.purchased_ats_credits or 0) + 1
+        else:
+            user.ats_checks_left_today = (user.ats_checks_left_today or 0) + 1
         
     elif feature == "resume_tailoring":
-        user.resume_tailoring_left_this_week = (user.resume_tailoring_left_this_week or 0) + 1
+        if credit_type == "purchased":
+            user.purchased_tailor_credits = (user.purchased_tailor_credits or 0) + 1
+        else:
+            user.resume_tailoring_left_this_week = (user.resume_tailoring_left_this_week or 0) + 1
         
     elif feature == "mock_interview":
         user.mock_interviews_left = (user.mock_interviews_left or 0) + 1
