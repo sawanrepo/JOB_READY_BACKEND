@@ -195,7 +195,7 @@ History: {history}
 
 Task:
 Analyze the candidate's last response (if any). Then generate the NEXT question.
-If the interview should end (after 8 questions are completed), say "INTERVIEW_END".
+Do NOT output "INTERVIEW_END" or say the interview is over; simply generate the next relevant question.
 """
 
 INTERVIEW_ANALYSIS_PROMPT = """

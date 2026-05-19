@@ -81,7 +81,7 @@ async def get_session_status(
 
 
 
-from app.utils.file import extract_text_from_pdf, validate_file_security, ALLOWED_VIDEO_EXTENSIONS
+from app.utils.file import extract_text_from_pdf, validate_file_security, ALLOWED_VIDEO_EXTENSIONS, validate_media_duration
 from app.models.interview import InterviewSession
 
 TEMP_DIR = "temp_videos"
@@ -140,6 +140,7 @@ async def process_response(
     request: Request,
     session_id: str,
     video: UploadFile = File(...),
+    retaken: bool = Form(default=False),
     # Fix #2: require authenticated user so sessions cannot be hijacked
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -156,11 +157,14 @@ async def process_response(
 
         content = await video.read()
         async with aiofiles.open(temp_path, "wb") as out_file:
-
             await out_file.write(content)
 
         logger.info(f"Saved video to {temp_path}")
-        response = await interview_service.process_response(db, session_id, temp_path)
+        
+        # Enforce video duration safety validation (2 minutes 30 seconds + 10s buffer = 160s)
+        validate_media_duration(temp_path, max_duration_seconds=160.0)
+        
+        response = await interview_service.process_response(db, session_id, temp_path, retaken=retaken)
         await db.commit() # Commit history updates
 
         return response
@@ -297,3 +301,52 @@ async def get_result(
     except Exception as e:
         logger.error(f"Error generating result: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{session_id}/warning")
+async def report_warning(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Increments the warning counter for a session."""
+    stmt = select(InterviewSession).where(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    session.warnings_count = (session.warnings_count or 0) + 1
+    
+    if session.warnings_count >= 5:
+        session.is_active = False
+        
+    await db.commit()
+    return {"warnings_count": session.warnings_count, "is_active": session.is_active}
+
+
+@router.post("/{session_id}/malpractice")
+async def report_malpractice(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Terminates a session due to malpractice."""
+    stmt = select(InterviewSession).where(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    session.is_active = False
+    await db.commit()
+    return {"status": "terminated", "message": "Interview ended due to malpractice."}
+

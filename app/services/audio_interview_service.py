@@ -3,6 +3,7 @@ import json
 import logging
 import asyncio
 import uuid
+from datetime import datetime, timezone
 import boto3
 import httpx
 from google import genai
@@ -46,7 +47,7 @@ class AudioInterviewService:
         # Try gemini-2.5-flash first, then try highly stable and lite backups
         models = [
             'gemini-2.5-flash',
-            'gemini-1.5-flash',
+            'gemini-3.0-flash',
             'gemini-3.1-flash-lite-preview'
         ]
         
@@ -150,7 +151,7 @@ class AudioInterviewService:
             "total_questions": len(questions)
         }
 
-    async def save_audio_answer(self, db: AsyncSession, session_id: str, question_index: int, audio_path: str):
+    async def save_audio_answer(self, db: AsyncSession, session_id: str, question_index: int, audio_path: str, retaken: bool = False):
         """Saves audio answer metadata and triggers background STT."""
         stmt = select(InterviewSession).where(InterviewSession.id == session_id)
         result = await db.execute(stmt)
@@ -158,6 +159,19 @@ class AudioInterviewService:
         
         if not session:
             raise ValueError("Session not found")
+
+        # Server-Side Anti-Tamper Time Limit Validation (3 mins answering + 2 mins upload grace. Adds +1 min if retake was claimed.)
+        max_allowed = 360.0 if retaken else 300.0
+        now = datetime.now(timezone.utc)
+        served_at = session.updated_at
+        if served_at.tzinfo is None:
+            served_at = served_at.replace(tzinfo=timezone.utc)
+        
+        elapsed_seconds = (now - served_at).total_seconds()
+        if elapsed_seconds > max_allowed:
+            raise ValueError(
+                f"Security alert: Answer submission timed out. You took {elapsed_seconds:.0f} seconds, which exceeds the maximum allowed time of {max_allowed:.0f} seconds."
+            )
 
         # Update progress
         session.question_number = question_index + 1

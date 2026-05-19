@@ -14,7 +14,7 @@ from app.models.user import User
 from app.models.interview import InterviewResult as DBInterviewResult, InterviewSession
 from app.database import get_db, async_session
 from app.utils.limiter import limiter
-from app.utils.file import extract_text_from_pdf, validate_file_security, ALLOWED_AUDIO_EXTENSIONS
+from app.utils.file import extract_text_from_pdf, validate_file_security, ALLOWED_AUDIO_EXTENSIONS, validate_media_duration
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,7 @@ async def save_audio_answer(
     background_tasks: BackgroundTasks,
     question_index: int = Form(...),
     audio: UploadFile = File(...),
+    retaken: bool = Form(default=False),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -109,8 +110,11 @@ async def save_audio_answer(
         async with aiofiles.open(temp_path, "wb") as out_file:
             await out_file.write(content)
 
+        # Enforce audio duration safety validation (2 minutes + 10s buffer = 130s)
+        validate_media_duration(temp_path, max_duration_seconds=130.0)
+
         # Update session progress and get context for STT
-        context = await audio_interview_service.save_audio_answer(db, session_id, question_index, temp_path)
+        context = await audio_interview_service.save_audio_answer(db, session_id, question_index, temp_path, retaken=retaken)
         
         # Trigger background STT
         background_tasks.add_task(
@@ -124,6 +128,14 @@ async def save_audio_answer(
         
         return {"status": "processing", "message": "Audio received and processing started."}
         
+    except ValueError as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise e
     except Exception as e:
         if os.path.exists(temp_path):
             os.remove(temp_path)

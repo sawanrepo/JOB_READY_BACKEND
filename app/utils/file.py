@@ -5,6 +5,7 @@ import uuid
 from fastapi import UploadFile, HTTPException
 import asyncio
 import magic
+import subprocess
 
 # Security configuration
 ALLOWED_RESUME_EXTENSIONS = {".pdf"}
@@ -78,6 +79,41 @@ def validate_file_security(upload_file: UploadFile, allowed_extensions: set, max
     except Exception as e:
         if isinstance(e, HTTPException): raise e
         pass
+
+def validate_media_duration(file_path: str, max_duration_seconds: float):
+    """
+    Checks the exact duration of a saved media file using ffprobe.
+    Falls back gracefully if ffprobe is not installed (e.g. during local testing).
+    """
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        file_path
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        try:
+            duration = float(result.stdout.strip())
+            if duration > max_duration_seconds:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Security risk: Uploaded media duration ({duration:.1f}s) exceeds the maximum allowed limit of {max_duration_seconds}s."
+                )
+        except ValueError:
+            # Output of ffprobe was not a valid float (unexpected formatting)
+            pass
+    except FileNotFoundError:
+        # ffprobe is not installed on the system (e.g. local windows machine without ffmpeg)
+        # Log a warning but let the validation pass to ensure seamless local developer experience
+        print(f"[WARNING] ffprobe not found on system. Skipping media duration validation for {file_path}")
+    except subprocess.CalledProcessError as e:
+        # ffprobe failed on this file (corrupted file headers)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to parse media file metadata. The file may be corrupt or invalid."
+        )
 
 async def extract_text_from_pdf(upload_file: UploadFile) -> str:
     # First, validate security for resume

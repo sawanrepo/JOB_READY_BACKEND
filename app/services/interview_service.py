@@ -10,6 +10,7 @@ from app.models.interview import InterviewSession
 import json
 import logging
 import asyncio
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class InterviewService:
         # Try gemini-2.5-flash first, then try highly stable backups
         models = [
             'gemini-2.5-flash',
-            'gemini-1.5-flash',
+            'gemini-3.0-flash',
             'gemini-3.1-flash-lite-preview'
         ]
         
@@ -105,13 +106,26 @@ class InterviewService:
             total_questions=8
         )
 
-    async def process_response(self, db: AsyncSession, session_id: str, video_path: str) -> InterviewResponse:
+    async def process_response(self, db: AsyncSession, session_id: str, video_path: str, retaken: bool = False) -> InterviewResponse:
         stmt = select(InterviewSession).where(InterviewSession.id == session_id, InterviewSession.is_active == True)
         result = await db.execute(stmt)
         session = result.scalar_one_or_none()
         
         if not session:
             raise ValueError("Invalid or inactive session ID")
+
+        # Server-Side Anti-Tamper Time Limit Validation (3 mins answering + 2 mins upload grace. Adds +1 min if retake was claimed.)
+        max_allowed = 360.0 if retaken else 300.0
+        now = datetime.now(timezone.utc)
+        served_at = session.updated_at
+        if served_at.tzinfo is None:
+            served_at = served_at.replace(tzinfo=timezone.utc)
+        
+        elapsed_seconds = (now - served_at).total_seconds()
+        if elapsed_seconds > max_allowed:
+            raise ValueError(
+                f"Security alert: Answer submission timed out. You took {elapsed_seconds:.0f} seconds, which exceeds the maximum allowed time of {max_allowed:.0f} seconds."
+            )
         
         current_q = session.current_question
 
@@ -196,7 +210,7 @@ class InterviewService:
         # Fallback for video analysis call
         models = [
             'gemini-2.5-flash',
-            'gemini-1.5-flash',
+            'gemini-3.0-flash',
             'gemini-3.1-flash-lite-preview'
         ]
         
