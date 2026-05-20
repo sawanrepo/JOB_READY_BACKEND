@@ -28,9 +28,11 @@ class Settings(BaseSettings):
     # Email
     SMTP_SERVER: str = Field(..., env="SMTP_SERVER")
     SMTP_PORT: int = Field(..., env="SMTP_PORT")
+    SMTP_USE_SSL: bool = Field(default=False, env="SMTP_USE_SSL")
     SMTP_USERNAME: str = Field(..., env="SMTP_USERNAME")
     SMTP_PASSWORD: str = Field(..., env="SMTP_PASSWORD")
-    EMAIL_FROM: EmailStr = Field(..., env="EMAIL_FROM")
+    EMAIL_FROM: str = Field(..., env="EMAIL_FROM")
+    EMAIL_REPLY_TO: Optional[EmailStr] = Field(default=None, env="EMAIL_REPLY_TO")
     
     # CORS
     CORS_ORIGINS: List[str] = Field(..., env="CORS_ORIGINS")

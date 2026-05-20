@@ -14,7 +14,7 @@ def seed_subscription_plans():
 
     if not db.query(SubscriptionPlan).first():
         plans = [
-            SubscriptionPlan(name="Free", max_ats_checks=1, max_resume_tailoring=2, max_mock_interviews=1),
+            SubscriptionPlan(name="Free", max_ats_checks=1, max_resume_tailoring=1, max_mock_interviews=1),
             SubscriptionPlan(name="Pro", max_ats_checks=5, max_resume_tailoring=7, max_mock_interviews=5),
             SubscriptionPlan(name="Pro Plus", max_ats_checks=10, max_resume_tailoring=14, max_mock_interviews=10),
         ]

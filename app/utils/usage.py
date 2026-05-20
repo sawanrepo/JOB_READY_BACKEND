@@ -6,7 +6,7 @@ from fastapi import HTTPException
 
 FREE_SUBSCRIPTION_ID = 1
 FREE_ATS_CHECKS_PER_DAY = 1
-FREE_RESUME_TAILORING_PER_WEEK = 2
+FREE_RESUME_TAILORING_PER_WEEK = 1
 
 
 def enforce_free_plan_limits(user: User) -> None:

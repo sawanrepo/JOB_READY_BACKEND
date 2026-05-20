@@ -1,55 +1,74 @@
-# ✅ This is a Lambda-compatible reset script for daily/weekly/monthly usage
-
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy import create_engine
-from app.models.user import User
-from datetime import datetime, timezone
 import os
+from datetime import datetime, timezone
+from typing import Optional
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://user:pass@host:port/dbname")
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.models.user import User
+
+
 FREE_SUBSCRIPTION_ID = 1
 FREE_ATS_CHECKS_PER_DAY = 1
-FREE_RESUME_TAILORING_PER_WEEK = 2
+FREE_RESUME_TAILORING_PER_WEEK = 1
+WEEKLY_RESET_WEEKDAY = 6  # Sunday, UTC
 
-# Create engine and session
-engine = create_engine(DATABASE_URL)
+
+def _database_url() -> str:
+    database_url = os.environ["DATABASE_URL"]
+    if database_url.startswith("postgresql+asyncpg://"):
+        return database_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+    return database_url
+
+
+engine = create_engine(_database_url(), pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-def reset_all_usage():
+
+def reset_all_usage(now: Optional[datetime] = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    weekly_reset = now.weekday() == WEEKLY_RESET_WEEKDAY
+
     db = SessionLocal()
-    users = db.query(User).all()
-    now = datetime.now(timezone.utc)
+    try:
+        update_values = {
+            User.subscription_id: FREE_SUBSCRIPTION_ID,
+            User.subscription_expires_at: None,
+            User.ats_checks_left_today: FREE_ATS_CHECKS_PER_DAY,
+            User.last_ats_check_at: now,
+        }
 
-    for user in users:
-        # Subscriptions are disabled for launch; reset only free-plan base quotas.
-        user.subscription_id = FREE_SUBSCRIPTION_ID
-        user.subscription_expires_at = None
-        user.ats_checks_left_today = FREE_ATS_CHECKS_PER_DAY
-        user.last_ats_check_at = now
+        if weekly_reset:
+            update_values[User.resume_tailoring_left_this_week] = FREE_RESUME_TAILORING_PER_WEEK
+            update_values[User.last_resume_tailoring_at] = now
 
-        # Weekly reset (only run if Sunday)
-        if now.weekday() == 6:  # Sunday
-            user.resume_tailoring_left_this_week = FREE_RESUME_TAILORING_PER_WEEK
-            user.last_resume_tailoring_at = now
+        users_updated = db.query(User).update(update_values, synchronize_session=False)
+        db.commit()
 
-        # Monthly reset (only run if 1st)
-        if now.day == 1:
-            # Mock and Audio interviews are now persistent and not reset monthly
-            pass
+        result = {
+            "users_updated": users_updated,
+            "ats_checks_left_today": FREE_ATS_CHECKS_PER_DAY,
+            "weekly_reset": weekly_reset,
+            "resume_tailoring_left_this_week": FREE_RESUME_TAILORING_PER_WEEK if weekly_reset else "unchanged",
+            "reset_at": now.isoformat(),
+        }
+        print(f"Usage reset complete: {result}")
+        return result
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
-
-    db.commit()
-    db.close()
-    print("✅ User usage limits reset successfully.")
-
-# For AWS Lambda
 
 def lambda_handler(event, context):
     try:
-        reset_all_usage()
-        return {"status": "success"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        result = reset_all_usage()
+        return {"status": "success", **result}
+    except Exception as exc:
+        print(f"Usage reset failed: {exc}")
+        return {"status": "error", "message": str(exc)}
+
 
 if __name__ == "__main__":
-    reset_all_usage()
+    print(reset_all_usage())

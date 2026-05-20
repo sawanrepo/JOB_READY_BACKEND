@@ -27,7 +27,7 @@ class User(Base):
 
     # 🔢 Usage tracking
     ats_checks_left_today = Column(Integer, default=1)
-    resume_tailoring_left_this_week = Column(Integer, default=2)
+    resume_tailoring_left_this_week = Column(Integer, default=1)
     mock_interviews_left = Column(Integer, default=0)
     audio_interviews_left = Column(Integer, default=0)
 
