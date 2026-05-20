@@ -17,7 +17,9 @@ WEEKLY_RESET_WEEKDAY = 6  # Sunday, UTC
 def _database_url() -> str:
     database_url = os.environ["DATABASE_URL"]
     if database_url.startswith("postgresql+asyncpg://"):
-        return database_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+        database_url = database_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+    if "ssl=require" in database_url and "sslmode=" not in database_url:
+        database_url = database_url.replace("ssl=require", "sslmode=require")
     return database_url
 
 
