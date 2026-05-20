@@ -182,7 +182,7 @@ async def google_auth(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        user = await handle_google_oauth(request.code, db)
+        user = await handle_google_oauth(request.code, db, request.redirect_uri)
     except HTTPException as e:
         log_security_event("LOGIN_FAILURE", "anonymous", {"method": "GOOGLE", "reason": str(e.detail)})
         raise e

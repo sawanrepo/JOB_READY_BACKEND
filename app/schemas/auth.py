@@ -53,6 +53,7 @@ class UserOut(UserBase):
 
 class GoogleAuthRequest(BaseModel):
     code: str
+    redirect_uri: str | None = None
 
 class SetPasswordRequest(BaseModel):
     password: str

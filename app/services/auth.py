@@ -254,9 +254,22 @@ async def change_password(user: User, current_password: str, new_password: str, 
     return user
 
 
-async def handle_google_oauth(code: str, db) -> User:
+async def handle_google_oauth(code: str, db, redirect_uri: str | None = None) -> User:
     token_url = "https://oauth2.googleapis.com/token"
     user_info_url = "https://www.googleapis.com/oauth2/v3/userinfo"
+    allowed_redirect_uris = {
+        settings.GOOGLE_REDIRECT_URI,
+        "https://jobreadyai.in/login",
+        "https://www.jobreadyai.in/login",
+        "http://localhost:8080/login",
+    }
+    oauth_redirect_uri = redirect_uri or settings.GOOGLE_REDIRECT_URI
+
+    if oauth_redirect_uri not in allowed_redirect_uris:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid Google redirect URI"
+        )
 
     async with httpx.AsyncClient() as client:
         # Exchange code for tokens
@@ -266,16 +279,17 @@ async def handle_google_oauth(code: str, db) -> User:
                 "code": code,
                 "client_id": settings.GOOGLE_CLIENT_ID,
                 "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+                "redirect_uri": oauth_redirect_uri,
                 "grant_type": "authorization_code"
             }
         )
 
         token_data = token_response.json()
         if "access_token" not in token_data:
+            google_error = token_data.get("error_description") or token_data.get("error")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Failed to authenticate with Google"
+                detail=f"Failed to authenticate with Google: {google_error or 'token exchange failed'}"
             )
 
         # Get user info
