@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # Razorpay
     RAZORPAY_KEY_ID: str = Field(..., env="RAZORPAY_KEY_ID")
     RAZORPAY_KEY_SECRET: str = Field(..., env="RAZORPAY_KEY_SECRET")
+    RAZORPAY_CREDITING_ENABLED: bool = Field(default=False, env="RAZORPAY_CREDITING_ENABLED")
     RAZORPAY_WEBHOOK_SECRET: str = Field(..., env="RAZORPAY_WEBHOOK_SECRET")
 
     # AWS

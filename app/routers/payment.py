@@ -40,6 +40,17 @@ PLAN_PRICES = {
 }
 
 SUBSCRIPTION_PLAN_NAMES = {"pro", "pro_plus"}
+TEST_MODE_CREDIT_BLOCK_DETAIL = "Credits cannot be added because Razorpay is currently in test mode."
+
+
+def _ensure_crediting_allowed() -> None:
+    if not settings.RAZORPAY_CREDITING_ENABLED or RAZORPAY_KEY_ID.startswith("rzp_test_"):
+        logger.warning(
+            "Blocking Razorpay credit allocation: crediting_enabled=%s, key_mode=%s",
+            settings.RAZORPAY_CREDITING_ENABLED,
+            "test" if RAZORPAY_KEY_ID.startswith("rzp_test_") else "live",
+        )
+        raise HTTPException(status_code=403, detail=TEST_MODE_CREDIT_BLOCK_DETAIL)
 
 
 @router.post("/create-order/{plan}")
@@ -247,6 +258,7 @@ async def verify_payment(
         raise HTTPException(status_code=500, detail="Could not verify order/payment details with payment gateway")
 
     try:
+        _ensure_crediting_allowed()
         success = await process_verified_payment(
             db=db,
             user_id=current_user.id,
@@ -265,6 +277,9 @@ async def verify_payment(
         await db.rollback()
         logger.warning("Duplicate payment integrity constraint triggered: %s", ie)
         raise HTTPException(status_code=400, detail="This payment has already been processed")
+    except HTTPException:
+        await db.rollback()
+        raise
     except Exception as e:
         await db.rollback()
         logger.error("Error processing payment in verify_payment: %s", e, exc_info=True)
@@ -347,6 +362,7 @@ async def razorpay_webhook(
         return {"status": "ignored", "detail": "Amount mismatch"}
 
     try:
+        _ensure_crediting_allowed()
         success = await process_verified_payment(
             db=db,
             user_id=user_id,
@@ -362,6 +378,10 @@ async def razorpay_webhook(
         else:
             logger.info("Webhook duplicate payment %s already processed. Ignoring.", payment_id)
             return {"status": "already_processed", "payment_id": payment_id}
+    except HTTPException as e:
+        await db.rollback()
+        logger.warning("Webhook payment not credited: %s", e.detail)
+        return {"status": "credit_blocked", "detail": e.detail}
     except Exception as e:
         await db.rollback()
         logger.error("Error processing payment in webhook: %s", e, exc_info=True)
