@@ -9,13 +9,31 @@ import httpx
 from google import genai
 from google.genai import types
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete
+from sqlalchemy import delete, select
 from app.config import settings
 from app.schemas.interview import InterviewStartRequest, InterviewResult
 from app.prompts import AUDIO_INTERVIEW_QUESTIONS_PROMPT, AUDIO_INTERVIEW_REPORT_PROMPT
 from app.models.interview import InterviewSession
 
 logger = logging.getLogger(__name__)
+
+AUDIO_TRANSCRIBE_FORMAT_BY_EXTENSION = {
+    ".webm": "webm",
+    ".mp3": "mp3",
+    ".wav": "wav",
+    ".m4a": "m4a",
+    ".mp4": "mp4",
+    ".ogg": "ogg",
+}
+
+
+def get_transcribe_media_format(audio_path: str) -> str:
+    ext = os.path.splitext(audio_path)[1].lower()
+    media_format = AUDIO_TRANSCRIBE_FORMAT_BY_EXTENSION.get(ext)
+    if not media_format:
+        raise ValueError(f"Unsupported audio format for transcription: {ext or 'unknown'}")
+    return media_format
+
 
 class AudioInterviewService:
     def __init__(self):
@@ -85,7 +103,8 @@ class AudioInterviewService:
                 status_code=503,
                 detail="AI service is temporarily experiencing high demand. Please try again shortly."
             )
-        raise HTTPException(status_code=500, detail=f"AI service error: {err_str}")
+        logger.error("AI service error after all audio fallbacks: %s", err_str)
+        raise HTTPException(status_code=500, detail="AI service failed. Please try again.")
 
     async def start_audio_interview(self, db: AsyncSession, user_id: int, request: InterviewStartRequest) -> dict:
         # Check for any existing active session for this user
@@ -102,7 +121,16 @@ class AudioInterviewService:
                 detail="You already have an active audio interview session. Please complete or resume it before starting a new one."
             )
 
-        session_id = os.urandom(4).hex()
+        await db.execute(
+            delete(InterviewSession).where(
+                InterviewSession.user_id == user_id,
+                InterviewSession.interview_type == "audio",
+                InterviewSession.is_active == False,
+                InterviewSession.warnings_count >= 5,
+            )
+        )
+
+        session_id = uuid.uuid4().hex
 
         # 1. Generate 10 questions at once
         prompt = AUDIO_INTERVIEW_QUESTIONS_PROMPT.format(
@@ -140,7 +168,10 @@ class AudioInterviewService:
             job_description=request.job_description,
             questions=questions,
             is_active=True,
-            history=[] # Initialize empty history
+            history=[], # Initialize empty history
+            retakes={},
+            processing_status="idle",
+            result_status="pending",
         )
         db.add(new_session)
         await db.flush()
@@ -153,15 +184,40 @@ class AudioInterviewService:
 
     async def save_audio_answer(self, db: AsyncSession, session_id: str, question_index: int, audio_path: str, retaken: bool = False):
         """Saves audio answer metadata and triggers background STT."""
-        stmt = select(InterviewSession).where(InterviewSession.id == session_id)
+        stmt = select(InterviewSession).where(InterviewSession.id == session_id).with_for_update()
         result = await db.execute(stmt)
         session = result.scalar_one_or_none()
         
         if not session:
             raise ValueError("Session not found")
 
-        # Server-Side Anti-Tamper Time Limit Validation (3 mins answering + 2 mins upload grace. Adds +1 min if retake was claimed.)
-        max_allowed = 360.0 if retaken else 300.0
+        # Validate audio question_index to prevent out-of-bounds or manipulation
+        if question_index < 0 or question_index >= len(session.questions or []):
+            raise ValueError(f"Invalid question index: {question_index}. Total questions: {len(session.questions or [])}")
+        current_question_index = session.question_number or 0
+        if question_index < current_question_index:
+            logger.info(
+                "Ignoring duplicate audio answer for session %s, question %s; current question is %s",
+                session_id,
+                question_index,
+                current_question_index,
+            )
+            return {
+                "session_id": session_id,
+                "question_text": session.questions[question_index],
+                "audio_path": audio_path,
+                "question_index": question_index,
+                "duplicate": True,
+            }
+        if question_index != current_question_index:
+            raise ValueError(
+                f"Invalid question order: expected question index {current_question_index}, got {question_index}"
+            )
+
+        # Retake grace is decided from server-side session state, never from the client flag.
+        retakes = dict(session.retakes or {})
+        retake_key = str(question_index)
+        max_allowed = 300.0
         now = datetime.now(timezone.utc)
         served_at = session.updated_at
         if served_at.tzinfo is None:
@@ -169,12 +225,21 @@ class AudioInterviewService:
         
         elapsed_seconds = (now - served_at).total_seconds()
         if elapsed_seconds > max_allowed:
+            if retakes.get(retake_key):
+                raise ValueError("Answer submission timed out. The retake allowance for this question has already been used.")
+            max_allowed = 360.0
+            if elapsed_seconds <= max_allowed:
+                retakes[retake_key] = True
+                session.retakes = retakes
+
+        if elapsed_seconds > max_allowed:
             raise ValueError(
                 f"Security alert: Answer submission timed out. You took {elapsed_seconds:.0f} seconds, which exceeds the maximum allowed time of {max_allowed:.0f} seconds."
             )
 
         # Update progress
         session.question_number = question_index + 1
+        session.processing_status = "processing"
         await db.commit()
         
         # Return necessary data for background task
@@ -187,14 +252,17 @@ class AudioInterviewService:
 
     async def process_stt_background(self, session_id: str, question_index: int, question_text: str, audio_path: str, db_factory):
         """Background task to handle S3 upload and AWS Transcribe."""
-        if not self.s3 or not self.transcribe:
-            logger.error(f"AWS clients not initialized. Skipping STT for session {session_id}")
-            return
-
         job_name = f"stt_{session_id}_{question_index}_{uuid.uuid4().hex[:6]}"
-        s3_key = f"audio_interviews/{session_id}/q_{question_index}.webm"
+        s3_key = None
+        job_started = False
         
         try:
+            media_format = get_transcribe_media_format(audio_path)
+            s3_key = f"audio_interviews/{session_id}/q_{question_index}.{media_format}"
+
+            if not self.s3 or not self.transcribe or not settings.AWS_S3_BUCKET_NAME:
+                raise RuntimeError("AWS clients or S3 bucket are not configured for audio transcription")
+
             # 1. Upload to S3
             logger.info(f"Uploading {audio_path} to S3 bucket {settings.AWS_S3_BUCKET_NAME}...")
             await asyncio.to_thread(
@@ -211,11 +279,14 @@ class AudioInterviewService:
                 self.transcribe.start_transcription_job,
                 TranscriptionJobName=job_name,
                 Media={'MediaFileUri': media_uri},
-                MediaFormat='webm',
+                MediaFormat=media_format,
                 LanguageCode='en-US'
             )
+            job_started = True
             
             # 3. Wait for Job Completion
+            deadline = asyncio.get_running_loop().time() + settings.AWS_TRANSCRIBE_TIMEOUT_SECONDS
+            status_response = None
             while True:
                 status_response = await asyncio.to_thread(
                     self.transcribe.get_transcription_job,
@@ -224,6 +295,8 @@ class AudioInterviewService:
                 job_status = status_response['TranscriptionJob']['TranscriptionJobStatus']
                 if job_status in ['COMPLETED', 'FAILED']:
                     break
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise TimeoutError(f"Transcribe job {job_name} timed out")
                 await asyncio.sleep(5)
             
             if job_status == 'FAILED':
@@ -231,8 +304,9 @@ class AudioInterviewService:
             
             # 4. Get Transcript
             transcript_uri = status_response['TranscriptionJob']['Transcript']['TranscriptFileUri']
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 res = await client.get(transcript_uri)
+                res.raise_for_status()
                 res_json = res.json()
                 raw_transcript = res_json['results']['transcripts'][0]['transcript']
                 # Handle empty or whitespace-only audio
@@ -256,11 +330,13 @@ class AudioInterviewService:
                     history[question_index] = {
                         "question": question_text,
                         "answer_text": transcript_text,
+                        "status": "completed",
                         "timestamp": str(uuid.uuid4())
                     }
                     
                     # Explicitly assign to trigger SQLAlchemy change detection
                     session.history = history
+                    session.processing_status = "completed" if len(history) == len(session.questions or []) else "idle"
                     await db.commit()
                     logger.info(f"STT complete and history updated for session {session_id}, Q{question_index}")
                 else:
@@ -277,30 +353,37 @@ class AudioInterviewService:
                     if session:
                         history = list(session.history or [])
                         while len(history) <= question_index: history.append(None)
-                        history[question_index] = {"question": question_text, "answer_text": "[STT Failed]", "error": str(e)}
+                        history[question_index] = {
+                            "question": question_text,
+                            "answer_text": "[STT Failed]",
+                            "status": "failed",
+                            "error": "Audio transcription failed. Please try again."
+                        }
                         session.history = history
+                        session.processing_status = "failed"
                         await db.commit()
             except Exception as inner_e:
                 logger.error(f"Failed to mark STT error: {inner_e}")
-
-            # Cleanup S3 and Transcribe to prevent resource leaks
-            try:
-                await asyncio.to_thread(
-                    self.s3.delete_object,
-                    Bucket=settings.AWS_S3_BUCKET_NAME,
-                    Key=s3_key
-                )
-                await asyncio.to_thread(
-                    self.transcribe.delete_transcription_job,
-                    TranscriptionJobName=job_name
-                )
-                logger.info(f"Cleaned up S3 and Transcribe for {job_name}")
-            except Exception as cleanup_e:
-                logger.error(f"Failed to cleanup S3/Transcribe for {job_name}: {cleanup_e}")
-
-        except Exception as e:
-            logger.error(f"STT Error for session {session_id}, Q{question_index}: {e}", exc_info=True)
         finally:
+            if s3_key and self.s3 and settings.AWS_S3_BUCKET_NAME:
+                try:
+                    await asyncio.to_thread(
+                        self.s3.delete_object,
+                        Bucket=settings.AWS_S3_BUCKET_NAME,
+                        Key=s3_key
+                    )
+                    logger.info("Deleted S3 audio object %s", s3_key)
+                except Exception as cleanup_e:
+                    logger.error(f"Failed to cleanup S3 object for {job_name}: {cleanup_e}")
+            if job_started and self.transcribe:
+                try:
+                    await asyncio.to_thread(
+                        self.transcribe.delete_transcription_job,
+                        TranscriptionJobName=job_name
+                    )
+                    logger.info("Deleted Transcribe job %s", job_name)
+                except Exception as cleanup_e:
+                    logger.error(f"Failed to cleanup Transcribe job {job_name}: {cleanup_e}")
             # Cleanup local file
             if os.path.exists(audio_path):
                 os.remove(audio_path)
@@ -320,25 +403,17 @@ class AudioInterviewService:
             await db.commit()
             raise ValueError("Interview discarded due to malpractice (too many warnings). No result generated.")
         
-        # Wait for any pending STT jobs (simplified: just check if history length matches questions)
-        # In a production app, we might want a more robust way to track pending jobs.
-        # Wait for any pending STT jobs
-        # We consider a job "pending" if the history index is None or if it's explicitly marked as an error.
-        max_retries = 10 # ~50 seconds max wait
-        while True:
-            history = session.history or []
-            questions = session.questions or []
-            
-            # Count entries that are either results or errors
-            completed_count = len([h for h in history if h is not None])
-            
-            if completed_count >= len(questions) or max_retries <= 0:
-                break
-                
-            logger.info(f"Waiting for STT jobs... {completed_count}/{len(questions)} (Retries left: {max_retries})")
-            await asyncio.sleep(5)
-            await db.refresh(session)
-            max_retries -= 1
+        history = session.history or []
+        questions = session.questions or []
+        transcripts_complete = (
+            len(history) == len(questions)
+            and all(
+                item is not None and not item.get("error") and item.get("answer_text")
+                for item in history
+            )
+        )
+        if not transcripts_complete:
+            raise ValueError("Interview is still processing. Please try again shortly.")
 
         history_json = json.dumps(session.history, indent=2)
 

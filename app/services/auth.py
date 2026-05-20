@@ -6,7 +6,6 @@ from app.utils.security import (
     verify_password,
     get_password_hash,
     create_access_token,
-    create_refresh_token,
     verify_token,
     hash_otp,
     verify_otp_hash,
@@ -100,7 +99,12 @@ async def create_user(email: str, password: str, full_name: str, db) -> User:
     await db.refresh(user)
 
     # Fix #7: run blocking SMTP call in a thread so it doesn't block the event loop
-    await asyncio.to_thread(send_otp_email, email, otp)
+    email_sent = await asyncio.to_thread(send_otp_email, email, otp)
+    if not email_sent:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not send verification email. Please try again later.",
+        )
 
     return user
 
@@ -160,7 +164,12 @@ async def resend_otp(email: str, db) -> None:
     await db.commit()
 
     # Fix #7: non-blocking SMTP call
-    await asyncio.to_thread(send_otp_email, email, otp)
+    email_sent = await asyncio.to_thread(send_otp_email, email, otp)
+    if not email_sent:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not send verification email. Please try again later.",
+        )
 
 
 async def forgot_password(email: str, db) -> None:
@@ -186,7 +195,12 @@ async def forgot_password(email: str, db) -> None:
     await db.commit()
 
     # Fix #7: non-blocking SMTP call
-    await asyncio.to_thread(send_password_reset_email, email, otp)
+    email_sent = await asyncio.to_thread(send_password_reset_email, email, otp)
+    if not email_sent:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not send password reset email. Please try again later.",
+        )
 
 
 async def reset_password(email: str, otp: str, new_password: str, db) -> None:
@@ -335,13 +349,12 @@ async def refresh_access_token(refresh_token: str, db) -> Token:
             )
 
         access_token = create_access_token(
-            data={"sub": user.email},
+            data={"sub": user.email, "user_id": user.id},
             expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         )
         return Token(
             access_token=access_token,
             token_type="bearer",
-            refresh_token=refresh_token,
             user_id=user.id,
             full_name=user.full_name,
             email=user.email

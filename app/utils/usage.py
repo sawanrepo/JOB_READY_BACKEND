@@ -1,8 +1,25 @@
 from datetime import datetime, timezone
-from sqlalchemy import update, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import User
 from fastapi import HTTPException
+
+FREE_SUBSCRIPTION_ID = 1
+FREE_ATS_CHECKS_PER_DAY = 1
+FREE_RESUME_TAILORING_PER_WEEK = 2
+
+
+def enforce_free_plan_limits(user: User) -> None:
+    """Subscriptions are disabled for launch; keep only free-plan base counters."""
+    if user.subscription_id != FREE_SUBSCRIPTION_ID:
+        user.subscription_id = FREE_SUBSCRIPTION_ID
+    user.subscription_expires_at = None
+
+    if (user.ats_checks_left_today or 0) > FREE_ATS_CHECKS_PER_DAY:
+        user.ats_checks_left_today = FREE_ATS_CHECKS_PER_DAY
+    if (user.resume_tailoring_left_this_week or 0) > FREE_RESUME_TAILORING_PER_WEEK:
+        user.resume_tailoring_left_this_week = FREE_RESUME_TAILORING_PER_WEEK
+
 
 async def can_use_feature_async(db: AsyncSession, user_id: int, feature: str) -> bool:
     """
@@ -12,6 +29,7 @@ async def can_use_feature_async(db: AsyncSession, user_id: int, feature: str) ->
     user = result.scalar_one_or_none()
     if not user:
         return False
+    enforce_free_plan_limits(user)
         
     mapping = {
         "ats_check": (user.ats_checks_left_today or 0) + (user.purchased_ats_credits or 0),
@@ -34,6 +52,8 @@ async def deduct_feature_usage_atomic(db: AsyncSession, user_id: int, feature: s
     
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    enforce_free_plan_limits(user)
 
     now = datetime.now(timezone.utc)
     
@@ -99,12 +119,16 @@ async def refund_feature_usage_atomic(db: AsyncSession, user_id: int, feature: s
             user.purchased_ats_credits = (user.purchased_ats_credits or 0) + 1
         else:
             user.ats_checks_left_today = (user.ats_checks_left_today or 0) + 1
+            if user.ats_checks_left_today > FREE_ATS_CHECKS_PER_DAY:
+                user.ats_checks_left_today = FREE_ATS_CHECKS_PER_DAY
         
     elif feature == "resume_tailoring":
         if credit_type == "purchased":
             user.purchased_tailor_credits = (user.purchased_tailor_credits or 0) + 1
         else:
             user.resume_tailoring_left_this_week = (user.resume_tailoring_left_this_week or 0) + 1
+            if user.resume_tailoring_left_this_week > FREE_RESUME_TAILORING_PER_WEEK:
+                user.resume_tailoring_left_this_week = FREE_RESUME_TAILORING_PER_WEEK
         
     elif feature == "mock_interview":
         user.mock_interviews_left = (user.mock_interviews_left or 0) + 1

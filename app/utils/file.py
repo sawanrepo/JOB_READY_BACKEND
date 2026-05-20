@@ -4,8 +4,16 @@ import os
 import uuid
 from fastapi import UploadFile, HTTPException
 import asyncio
-import magic
+import logging
 import subprocess
+from app.config import settings
+
+try:
+    import magic
+except Exception:
+    magic = None
+
+logger = logging.getLogger(__name__)
 
 # Security configuration
 ALLOWED_RESUME_EXTENSIONS = {".pdf"}
@@ -43,6 +51,8 @@ def validate_file_security(upload_file: UploadFile, allowed_extensions: set, max
 
     # 3. Magic Byte (MIME) Validation using python-magic
     try:
+        if magic is None:
+            raise RuntimeError("python-magic/libmagic is not available")
         header = upload_file.file.read(2048)
         upload_file.file.seek(0)
         
@@ -61,9 +71,12 @@ def validate_file_security(upload_file: UploadFile, allowed_extensions: set, max
     except HTTPException:
         raise
     except Exception as e:
-        # If magic is not installed yet or fails, fallback to basic security
-        print(f"Magic validation fallback: {e}")
-        pass
+        logger.warning("File magic validation failed: %s", e, exc_info=True)
+        if settings.STRICT_UPLOAD_VALIDATION:
+            raise HTTPException(
+                status_code=400,
+                detail="File content could not be verified. Please upload a valid supported file."
+            )
 
     # 4. Check Size
     try:
@@ -93,7 +106,7 @@ def validate_media_duration(file_path: str, max_duration_seconds: float):
         file_path
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=15)
         try:
             duration = float(result.stdout.strip())
             if duration > max_duration_seconds:
@@ -105,9 +118,17 @@ def validate_media_duration(file_path: str, max_duration_seconds: float):
             # Output of ffprobe was not a valid float (unexpected formatting)
             pass
     except FileNotFoundError:
-        # ffprobe is not installed on the system (e.g. local windows machine without ffmpeg)
-        # Log a warning but let the validation pass to ensure seamless local developer experience
-        print(f"[WARNING] ffprobe not found on system. Skipping media duration validation for {file_path}")
+        logger.warning("ffprobe not found while validating media duration for %s", file_path)
+        if settings.REQUIRE_FFPROBE:
+            raise HTTPException(
+                status_code=503,
+                detail="Media validation service is not configured. Please try again later."
+            )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            status_code=400,
+            detail="Media metadata validation timed out. Please upload a valid media file."
+        )
     except subprocess.CalledProcessError as e:
         # ffprobe failed on this file (corrupted file headers)
         raise HTTPException(

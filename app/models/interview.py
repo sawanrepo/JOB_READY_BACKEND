@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Boolean, Index, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -17,6 +17,15 @@ class InterviewResult(Base):
 
 class InterviewSession(Base):
     __tablename__ = "interview_sessions"
+    __table_args__ = (
+        Index(
+            "uq_interview_sessions_user_type_active",
+            "user_id",
+            "interview_type",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+        ),
+    )
     
     id = Column(String, primary_key=True, index=True) # session_id (hex/uuid)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
@@ -29,6 +38,9 @@ class InterviewSession(Base):
     current_question = Column(String, nullable=True)
     warnings_count = Column(Integer, server_default='0')
     is_active = Column(Boolean, server_default='1')
+    retakes = Column(JSON, server_default='{}')
+    processing_status = Column(String, server_default='idle')
+    result_status = Column(String, server_default='pending')
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     

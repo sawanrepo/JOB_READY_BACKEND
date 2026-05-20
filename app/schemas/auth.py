@@ -5,7 +5,7 @@ from datetime import datetime
 class Token(BaseModel):
     access_token: str
     token_type: str
-    refresh_token: str
+    refresh_token: str | None = None
     user_id: int
     full_name: str | None = None
     email: str | None = None

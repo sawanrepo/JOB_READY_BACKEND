@@ -10,6 +10,7 @@ from app.models.interview import InterviewSession
 import json
 import logging
 import asyncio
+import uuid
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,8 @@ class InterviewService:
                 status_code=503,
                 detail="AI service is temporarily experiencing high demand. Please try again shortly."
             )
-        raise HTTPException(status_code=500, detail=f"AI service error: {err_str}")
+        logger.error("AI service error after all video fallbacks: %s", err_str)
+        raise HTTPException(status_code=500, detail="AI service failed. Please try again.")
 
     async def start_interview(self, db: AsyncSession, user_id: int, request: InterviewStartRequest) -> InterviewResponse:
         # Check for any existing active session for this user
@@ -78,7 +80,16 @@ class InterviewService:
                 detail="You already have an active video interview session. Please complete or resume it before starting a new one."
             )
 
-        session_id = os.urandom(4).hex()
+        await db.execute(
+            delete(InterviewSession).where(
+                InterviewSession.user_id == user_id,
+                InterviewSession.interview_type == "video",
+                InterviewSession.is_active == False,
+                InterviewSession.warnings_count >= 5,
+            )
+        )
+
+        session_id = uuid.uuid4().hex
 
         
         # Initialize session in DB
@@ -90,7 +101,10 @@ class InterviewService:
             job_description=request.job_description,
             history=[],
             question_number=0,
-            is_active=True
+            is_active=True,
+            retakes={},
+            processing_status="idle",
+            result_status="pending",
         )
         db.add(new_session)
         await db.flush() # Get session_id into DB context
@@ -107,21 +121,34 @@ class InterviewService:
         )
 
     async def process_response(self, db: AsyncSession, session_id: str, video_path: str, retaken: bool = False) -> InterviewResponse:
-        stmt = select(InterviewSession).where(InterviewSession.id == session_id, InterviewSession.is_active == True)
+        stmt = select(InterviewSession).where(
+            InterviewSession.id == session_id,
+            InterviewSession.is_active == True
+        ).with_for_update()
         result = await db.execute(stmt)
         session = result.scalar_one_or_none()
         
         if not session:
             raise ValueError("Invalid or inactive session ID")
 
-        # Server-Side Anti-Tamper Time Limit Validation (3 mins answering + 2 mins upload grace. Adds +1 min if retake was claimed.)
-        max_allowed = 360.0 if retaken else 300.0
+        # Retake grace is decided from server-side session state, never from the client flag.
+        retakes = dict(session.retakes or {})
+        retake_key = str(session.question_number)
+        max_allowed = 300.0
         now = datetime.now(timezone.utc)
         served_at = session.updated_at
         if served_at.tzinfo is None:
             served_at = served_at.replace(tzinfo=timezone.utc)
         
         elapsed_seconds = (now - served_at).total_seconds()
+        if elapsed_seconds > max_allowed:
+            if retakes.get(retake_key):
+                raise ValueError("Answer submission timed out. The retake allowance for this question has already been used.")
+            max_allowed = 360.0
+            if elapsed_seconds <= max_allowed:
+                retakes[retake_key] = True
+                session.retakes = retakes
+
         if elapsed_seconds > max_allowed:
             raise ValueError(
                 f"Security alert: Answer submission timed out. You took {elapsed_seconds:.0f} seconds, which exceeds the maximum allowed time of {max_allowed:.0f} seconds."
@@ -132,7 +159,13 @@ class InterviewService:
         logger.info(f"Processing response for session {session_id}, question {session.question_number}")
 
         # 1. Analyze video response
-        analysis = await self._analyze_video(video_path, current_q)
+        session.processing_status = "processing"
+        try:
+            analysis = await self._analyze_video(video_path, current_q)
+        except Exception:
+            session.processing_status = "failed"
+            await db.commit()
+            raise
         
         # 2. Update history in DB
         new_history = list(session.history)
@@ -149,7 +182,10 @@ class InterviewService:
         
         if ended:
              session.is_active = False
+             session.processing_status = "completed"
              logger.info(f"Interview ended for session {session_id}")
+        else:
+             session.processing_status = "idle"
 
         return InterviewResponse(
             session_id=session_id,
@@ -196,10 +232,13 @@ class InterviewService:
         logger.info(f"Uploading video {video_path} to Gemini...")
         video_file = await self.client.aio.files.upload(file=video_path)
         
+        deadline = asyncio.get_running_loop().time() + settings.GEMINI_FILE_PROCESSING_TIMEOUT_SECONDS
         while True:
              file_info = await self.client.aio.files.get(name=video_file.name)
              if file_info.state.name != 'PROCESSING':
                   break
+             if asyncio.get_running_loop().time() >= deadline:
+                  raise TimeoutError("Video processing timed out")
              await asyncio.sleep(2)
 
         if file_info.state.name == 'FAILED':
@@ -240,7 +279,8 @@ class InterviewService:
                 status_code=503,
                 detail="AI service is temporarily experiencing high demand. Please try again shortly."
             )
-        raise HTTPException(status_code=500, detail=f"AI video analysis failed: {err_str}")
+        logger.error("AI video analysis failed after all fallbacks: %s", err_str)
+        raise HTTPException(status_code=500, detail="AI video analysis failed. Please try again.")
 
     async def generate_result(self, db: AsyncSession, session_id: str) -> InterviewResult:
         stmt = select(InterviewSession).where(InterviewSession.id == session_id)

@@ -3,12 +3,24 @@ import subprocess
 import uuid
 import re
 import shutil
+import logging
 from jinja2 import Environment, FileSystemLoader
 from fastapi import HTTPException
 from app.config import settings
 
 # Get the project root directory
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+logger = logging.getLogger(__name__)
+
+
+def _run_latex(latex_command: str, tex_filename: str, work_dir: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [latex_command, "-interaction=nonstopmode", "-no-shell-escape", tex_filename],
+        cwd=work_dir,
+        capture_output=True,
+        text=True,
+        timeout=settings.LATEX_COMPILE_TIMEOUT_SECONDS,
+    )
 
 def escape_latex_deep(value):
     if isinstance(value, str):
@@ -47,9 +59,7 @@ def escape_latex_deep(value):
         return value
 
 def render_latex_template(content: dict) -> str:
-    print("[DEBUG] Rendering LaTeX template with content:", content)
     content = escape_latex_deep(content)
-    print("[DEBUG] Escaped content for LaTeX:", content)
 
     templates_dir = os.path.join(PROJECT_ROOT, "app", "templates")
 
@@ -62,7 +72,7 @@ def render_latex_template(content: dict) -> str:
         comment_start_string='\\#{',
         comment_end_string='}',
         trim_blocks=True,
-        autoescape=False
+        autoescape=False  # nosec B701 - HTML escaping is incorrect for LaTeX. Deep custom LaTeX escaping is performed beforehand.
     )
 
     try:
@@ -70,8 +80,8 @@ def render_latex_template(content: dict) -> str:
         rendered = template.render(content=content)
         return rendered
     except Exception as e:
-        print(f"[ERROR] Template rendering failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Template rendering failed: {str(e)}")
+        logger.error("Template rendering failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Template rendering failed. Please try again.")
 
 def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: dict = None) -> str:
     os.makedirs(output_dir, exist_ok=True)
@@ -80,6 +90,7 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
     
     # Create a temporary working directory
     work_dir = os.path.join(output_dir, f"work_{filename}")
+    debug_tex_path = None
     os.makedirs(work_dir, exist_ok=True)
     templates_dir = os.path.join(PROJECT_ROOT, "app", "templates")
     
@@ -108,7 +119,7 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
         current_tex_content = tex_content
         
         if content:
-            print("[DEBUG] Smart spacing: Compiling with standard preset (Pass 1)...")
+            logger.debug("Smart spacing: compiling with standard preset")
             content_std = dict(content)
             content_std.update(preset_standard)
             tex_std = render_latex_template(content_std)
@@ -116,12 +127,7 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
             with open(tex_work_path, "w", encoding="utf-8") as f:
                 f.write(tex_std)
                 
-            result = subprocess.run(
-                [latex_command, "-interaction=nonstopmode", tex_filename],
-                cwd=work_dir,
-                capture_output=True,
-                text=True,
-            )
+            result = _run_latex(latex_command, tex_filename, work_dir)
             
             pages_std = 1
             if os.path.exists(log_work_path):
@@ -130,10 +136,10 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
                 page_match = re.search(r"Output written on .*?\.pdf \((\d+) pages?", log_data)
                 if page_match:
                     pages_std = int(page_match.group(1))
-            print(f"[DEBUG] Standard preset resulted in {pages_std} page(s)")
+            logger.debug("Standard preset resulted in %s page(s)", pages_std)
             
             if pages_std == 2:
-                print("[DEBUG] Smart spacing: Attempting to squeeze 2 pages to 1 page...")
+                logger.debug("Smart spacing: attempting to squeeze 2 pages to 1 page")
                 content_tight = dict(content)
                 content_tight.update(preset_tightest)
                 tex_tight = render_latex_template(content_tight)
@@ -141,12 +147,7 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
                 with open(tex_work_path, "w", encoding="utf-8") as f:
                     f.write(tex_tight)
                     
-                result = subprocess.run(
-                    [latex_command, "-interaction=nonstopmode", tex_filename],
-                    cwd=work_dir,
-                    capture_output=True,
-                    text=True,
-                )
+                result = _run_latex(latex_command, tex_filename, work_dir)
                 
                 pages_tight = 2
                 if os.path.exists(log_work_path):
@@ -155,19 +156,19 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
                     page_match = re.search(r"Output written on .*?\.pdf \((\d+) pages?", log_data)
                     if page_match:
                         pages_tight = int(page_match.group(1))
-                print(f"[DEBUG] Tightest preset resulted in {pages_tight} page(s)")
+                logger.debug("Tightest preset resulted in %s page(s)", pages_tight)
                 
                 if pages_tight == 1:
-                    print("[DEBUG] Smart spacing: Successfully squeezed to 1 page!")
+                    logger.debug("Smart spacing: successfully squeezed to 1 page")
                     selected_preset = preset_tightest
                     current_tex_content = tex_tight
                 else:
-                    print("[DEBUG] Smart spacing: Genuine 2-page resume. Keeping standard preset.")
+                    logger.debug("Smart spacing: genuine 2-page resume, keeping standard preset")
                     selected_preset = preset_standard
                     current_tex_content = tex_std
                     
             elif pages_std >= 3:
-                print("[DEBUG] Smart spacing: Attempting to squeeze 3+ pages to 2 pages...")
+                logger.debug("Smart spacing: attempting to squeeze 3+ pages to 2 pages")
                 content_tight = dict(content)
                 content_tight.update(preset_tightest)
                 tex_tight = render_latex_template(content_tight)
@@ -175,12 +176,7 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
                 with open(tex_work_path, "w", encoding="utf-8") as f:
                     f.write(tex_tight)
                     
-                result = subprocess.run(
-                    [latex_command, "-interaction=nonstopmode", tex_filename],
-                    cwd=work_dir,
-                    capture_output=True,
-                    text=True,
-                )
+                result = _run_latex(latex_command, tex_filename, work_dir)
                 
                 pages_tight = 3
                 if os.path.exists(log_work_path):
@@ -189,14 +185,14 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
                     page_match = re.search(r"Output written on .*?\.pdf \((\d+) pages?", log_data)
                     if page_match:
                         pages_tight = int(page_match.group(1))
-                print(f"[DEBUG] Tightest preset resulted in {pages_tight} page(s)")
+                logger.debug("Tightest preset resulted in %s page(s)", pages_tight)
                 
                 if pages_tight <= 2:
-                    print(f"[DEBUG] Smart spacing: Successfully squeezed to {pages_tight} page(s)!")
+                    logger.debug("Smart spacing: successfully squeezed to %s page(s)", pages_tight)
                     selected_preset = preset_tightest
                     current_tex_content = tex_tight
                 else:
-                    print("[DEBUG] Smart spacing: Keeping standard preset.")
+                    logger.debug("Smart spacing: keeping standard preset")
                     selected_preset = preset_standard
                     current_tex_content = tex_std
             else:
@@ -210,19 +206,14 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
         with open(tex_work_path, "w", encoding="utf-8") as f:
             f.write(current_tex_content)
             
-        # DEBUG: Save a copy of the LaTeX content
-        debug_tex_path = os.path.join(output_dir, f"{filename}.tex")
-        with open(debug_tex_path, "w", encoding="utf-8") as f:
-            f.write(current_tex_content)
-        print(f"[DEBUG] Saved final LaTeX file at: {debug_tex_path}")
+        if settings.DEBUG:
+            debug_tex_path = os.path.join(output_dir, f"{filename}.tex")
+            with open(debug_tex_path, "w", encoding="utf-8") as f:
+                f.write(current_tex_content)
+            logger.debug("Saved temporary LaTeX file at: %s", debug_tex_path)
             
-        print("[DEBUG] Running final LaTeX pass...")
-        last_result = subprocess.run(
-            [latex_command, "-interaction=nonstopmode", tex_filename],
-            cwd=work_dir,
-            capture_output=True,
-            text=True,
-        )
+        logger.debug("Running final LaTeX pass")
+        last_result = _run_latex(latex_command, tex_filename, work_dir)
         
         # Check if PDF was generated
         pdf_work_path = os.path.join(work_dir, f"{filename}.pdf")
@@ -235,7 +226,7 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
                 f.write(last_result.stdout)
             with open(os.path.join(work_dir, "latex_stderr.log"), "w") as f:
                 f.write(last_result.stderr)
-            raise RuntimeError(f"{error_detail}\nSTDERR: {last_result.stderr[:500]}")
+            raise RuntimeError(error_detail)
         
         # Verify PDF exists and has content
         if not os.path.exists(pdf_work_path):
@@ -246,25 +237,24 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
 
         # Move PDF to final output location
         shutil.move(pdf_work_path, pdf_path)
-        print(f"[DEBUG] PDF compiled successfully at: {pdf_path}")
+        logger.debug("PDF compiled successfully at: %s", pdf_path)
         return pdf_path
         
     except Exception as e:
         # Preserve working directory for debugging
-        print(f"[ERROR] Compilation failed: {str(e)}")
-        raise HTTPException(
-            status_code=500, 
-            detail=(
-                f"Compilation failed: {str(e)}\n"
-                f"Debug files preserved at: {work_dir}\n"
-                f"LaTeX source saved at: {debug_tex_path}"
-            )
-        )
+        logger.error("Compilation failed in %s: %s", work_dir, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Resume PDF compilation failed. Please try again.")
     
     finally:
-        # Only clean up if compilation was successful
         if 'pdf_path' in locals() and os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 1024:
-            print(f"[DEBUG] Cleaning up working directory: {work_dir}")
+            logger.debug("Cleaning up working directory: %s", work_dir)
             shutil.rmtree(work_dir, ignore_errors=True)
+            if debug_tex_path and os.path.exists(debug_tex_path):
+                os.remove(debug_tex_path)
+        elif not settings.DEBUG:
+            logger.debug("Cleaning up failed LaTeX working directory: %s", work_dir)
+            shutil.rmtree(work_dir, ignore_errors=True)
+            if debug_tex_path and os.path.exists(debug_tex_path):
+                os.remove(debug_tex_path)
         else:
-            print(f"[WARNING] Preserving working directory due to errors: {work_dir}")
+            logger.warning("Preserving working directory due to errors: %s", work_dir)

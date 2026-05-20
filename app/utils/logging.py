@@ -6,6 +6,11 @@ from logging.handlers import TimedRotatingFileHandler
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from contextvars import ContextVar
+from jose import JWTError, jwt
+from sqlalchemy import select
+from app.config import settings
+from app.database import async_session
+from app.models.user import User
 
 # Context variable to store trace_id for the current request
 trace_id_var: ContextVar[str] = ContextVar("trace_id", default="")
@@ -57,6 +62,40 @@ def setup_logging():
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
+
+async def _resolve_user_id_from_auth_header(auth_header: str | None) -> str:
+    if not auth_header:
+        return "anonymous"
+
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return "anonymous"
+
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        return "anonymous"
+
+    if payload.get("type") != "access":
+        return "anonymous"
+
+    token_user_id = payload.get("user_id")
+    if token_user_id is not None:
+        return str(token_user_id)
+
+    email = payload.get("sub")
+    if not email:
+        return "anonymous"
+
+    try:
+        async with async_session() as db:
+            result = await db.execute(select(User.id).where(User.email == email))
+            db_user_id = result.scalar_one_or_none()
+            return str(db_user_id) if db_user_id is not None else "anonymous"
+    except Exception:
+        return "anonymous"
+
+
 class StructuredLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         trace_id = str(uuid.uuid4())
@@ -65,9 +104,8 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
         
         start_time = time.time()
         
-        # Determine user_id if possible (lightweight)
-        user_id = "anonymous"
         auth_header = request.headers.get("Authorization")
+        user_id_var.set(await _resolve_user_id_from_auth_header(auth_header))
         
         path = request.url.path
         method = request.method

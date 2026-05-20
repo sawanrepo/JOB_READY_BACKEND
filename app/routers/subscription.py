@@ -5,33 +5,10 @@ from datetime import datetime, timedelta, timezone
 from app.database import get_db
 from app.models.user import User
 from app.models.subscription import SubscriptionPlan
-from app.routers.auth import get_current_user
+from app.utils.auth import get_current_user
 
 router = APIRouter()
 
 @router.post("/subscribe/{plan_name}")
 async def subscribe(plan_name: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    # Get plan first
-    plan = await db.execute(
-        select(SubscriptionPlan).where(SubscriptionPlan.name == plan_name)
-    )
-    plan = plan.scalars().first()
-
-    if not plan:
-        raise HTTPException(status_code=404, detail="Subscription plan not found")
-
-    # Allow if currently on free plan or if the new plan is different
-    if current_user.subscription_id == plan.id and current_user.subscription_expires_at and current_user.subscription_expires_at > datetime.now(timezone.utc):
-        raise HTTPException(status_code=400, detail=f"You are already subscribed to the {plan_name} plan.")
-
-    current_user.subscription_id = plan.id
-    current_user.subscription_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
-
-    # Reset usage based on new plan
-    current_user.ats_checks_left_today = plan.max_ats_checks
-    current_user.resume_tailoring_left_this_week = plan.max_resume_tailoring
-    current_user.mock_interviews_left = (current_user.mock_interviews_left or 0) + plan.max_mock_interviews
-
-
-    await db.commit()
-    return {"message": f"Successfully subscribed to {plan_name}"}
+    raise HTTPException(status_code=501, detail="Subscriptions are not available yet.")

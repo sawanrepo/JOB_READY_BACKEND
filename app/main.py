@@ -5,7 +5,6 @@ from app.database import engine, Base
 from app.routers import auth, resume, payment, interview, audio_interview, subscription
 from app.config import settings
 from contextlib import asynccontextmanager
-from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from app.utils.limiter import limiter
@@ -62,14 +61,19 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    # Content Security Policy: Allows self, Google Auth, and Razorpay
+    # Content Security Policy: Allows current Google Auth/Razorpay flows while blocking common legacy sinks.
     csp = (
         "default-src 'self'; "
         "script-src 'self' https://accounts.google.com https://checkout.razorpay.com https://api.razorpay.com 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; "
         "frame-src https://accounts.google.com https://api.razorpay.com; "
-        "connect-src 'self' https://accounts.google.com https://api.razorpay.com;"
+        "connect-src 'self' https://accounts.google.com https://api.razorpay.com; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'; "
+        "form-action 'self';"
     )
     response.headers["Content-Security-Policy"] = csp
     return response
@@ -90,8 +94,6 @@ app.add_exception_handler(RateLimitExceeded, custom_rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(StructuredLoggingMiddleware)
 
-
-app.mount("/resume/download", StaticFiles(directory="output"), name="resume-download")
 
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])

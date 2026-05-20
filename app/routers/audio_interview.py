@@ -3,18 +3,20 @@ import os
 import uuid
 import logging
 import aiofiles
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.interview import InterviewStartRequest, InterviewResult
 from app.services.audio_interview_service import AudioInterviewService
 from app.utils.auth import get_current_user
-from app.utils.usage import can_use_feature_async, deduct_feature_usage_atomic
+from app.utils.usage import deduct_feature_usage_atomic, refund_feature_usage_atomic
 from app.utils.validation import validate_job_description, validate_resume_text
 from app.models.user import User
 from app.models.interview import InterviewResult as DBInterviewResult, InterviewSession
 from app.database import get_db, async_session
 from app.utils.limiter import limiter
 from app.utils.file import extract_text_from_pdf, validate_file_security, ALLOWED_AUDIO_EXTENSIONS, validate_media_duration
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,35 @@ audio_interview_service = AudioInterviewService()
 
 TEMP_DIR = "temp_audios"
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+AUDIO_EXTENSIONS_BY_MIME = {
+    "audio/webm": ".webm",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/mp4": ".m4a",
+    "audio/aac": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/ogg": ".ogg",
+}
+
+UNSUPPORTED_AUDIO_FORMAT_MESSAGE = (
+    "Unsupported audio format. Please use a supported browser that records WebM audio, "
+    "such as the latest Google Chrome or Microsoft Edge."
+)
+
+
+def _extension_from_upload(audio: UploadFile) -> str:
+    content_type = (audio.content_type or "").split(";")[0].lower()
+    if content_type in AUDIO_EXTENSIONS_BY_MIME:
+        return AUDIO_EXTENSIONS_BY_MIME[content_type]
+
+    ext = os.path.splitext(audio.filename or "")[1].lower()
+    if ext in ALLOWED_AUDIO_EXTENSIONS:
+        return ext
+
+    raise HTTPException(status_code=400, detail=UNSUPPORTED_AUDIO_FORMAT_MESSAGE)
 
 @router.get("/session/{session_id}")
 @limiter.limit("10/minute")
@@ -35,7 +66,8 @@ async def get_audio_session_status(
     """Fetches the current state of an active audio interview session."""
     stmt = select(InterviewSession).where(
         InterviewSession.id == session_id,
-        InterviewSession.user_id == current_user.id
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.interview_type == "audio"
     )
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
@@ -50,7 +82,9 @@ async def get_audio_session_status(
         "current_question_index": session.question_number,
         "history": session.history,
         "warnings_count": session.warnings_count,
-        "is_active": session.is_active
+        "is_active": session.is_active,
+        "processing_status": session.processing_status or "idle",
+        "result_status": session.result_status or "pending",
     }
 
 
@@ -64,28 +98,45 @@ async def start_audio_interview(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # Check usage
-        if not await can_use_feature_async(db, current_user.id, "audio_interview"):
-            raise HTTPException(status_code=403, detail="Audio interview limit reached. Please upgrade or purchase one.")
+        if not audio_interview_service.s3 or not audio_interview_service.transcribe or not settings.AWS_S3_BUCKET_NAME:
+            raise HTTPException(status_code=503, detail="Audio transcription service is not configured. Please try again later.")
 
+        # Validate inputs before touching credits
         validate_job_description(job_description)
-
         resume_text = await extract_text_from_pdf(resume_pdf)
         validate_resume_text(resume_text)
+
+        # RESERVATION-BASED: deduct_feature_usage_atomic is the sole gatekeeper.
+        # It acquires a SELECT FOR UPDATE row lock, checks credits, and deducts
+        # in a single atomic step — no separate eligibility check, no TOCTOU gap.
+        # Raises HTTP 403 automatically if credits are zero.
+        credit_type = await deduct_feature_usage_atomic(db, current_user.id, "audio_interview")
+        await db.commit()  # Commit reservation immediately so concurrent requests see it
+
         req = InterviewStartRequest(resume_text=resume_text, job_description=job_description)
 
-        response = await audio_interview_service.start_audio_interview(db, current_user.id, req)
+        try:
+            response = await audio_interview_service.start_audio_interview(db, current_user.id, req)
+            await db.commit()
+            return response
+        except Exception as ai_err:
+            # AI/session creation failed — refund the reserved credit
+            logger.error(f"Audio interview start failed after credit reservation, refunding: {ai_err}")
+            await db.rollback()
+            await refund_feature_usage_atomic(db, current_user.id, "audio_interview", credit_type)
+            await db.commit()
+            if isinstance(ai_err, IntegrityError):
+                raise HTTPException(
+                    status_code=400,
+                    detail="You already have an active audio interview session. Please complete or resume it before starting a new one."
+                )
+            raise
 
-        # Deduct usage only if successful
-        await deduct_feature_usage_atomic(db, current_user.id, "audio_interview")
-        await db.commit()
-
-        return response
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error starting audio interview: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error starting audio interview: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not start audio interview. Please try again.")
 
 
 @router.post("/{session_id}/answer")
@@ -98,9 +149,22 @@ async def save_audio_answer(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Receives a single question's audio and processes it in the background."""
-    ext = os.path.splitext(audio.filename or "")[1] or ".webm"
-    safe_ext = ext if ext.lower() in {".webm", ".mp3", ".wav", ".m4a", ".ogg"} else ".webm"
+    # Ownership and existence check
+    session_stmt = select(InterviewSession).where(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.interview_type == "audio",
+        InterviewSession.is_active == True
+    )
+    session_res = await db.execute(session_stmt)
+    session = session_res.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found, unauthorized, or already completed")
+
+    if not audio_interview_service.s3 or not audio_interview_service.transcribe or not settings.AWS_S3_BUCKET_NAME:
+        raise HTTPException(status_code=503, detail="Audio transcription service is not configured. Please try again later.")
+
+    safe_ext = _extension_from_upload(audio)
     temp_path = os.path.join(TEMP_DIR, f"ans_{session_id}_{question_index}_{uuid.uuid4().hex[:6]}{safe_ext}")
 
     try:
@@ -114,7 +178,11 @@ async def save_audio_answer(
         validate_media_duration(temp_path, max_duration_seconds=130.0)
 
         # Update session progress and get context for STT
-        context = await audio_interview_service.save_audio_answer(db, session_id, question_index, temp_path, retaken=retaken)
+        context = await audio_interview_service.save_audio_answer(db, session_id, question_index, temp_path)
+        if context.get("duplicate"):
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return {"status": "processing", "message": "Audio answer was already received and is processing."}
         
         # Trigger background STT
         background_tasks.add_task(
@@ -131,7 +199,8 @@ async def save_audio_answer(
     except ValueError as e:
         if os.path.exists(temp_path):
             os.remove(temp_path)
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning("Invalid audio answer for session %s: %s", session_id, e)
+        raise HTTPException(status_code=400, detail="Invalid audio answer. Please try again.")
     except HTTPException as e:
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -139,8 +208,8 @@ async def save_audio_answer(
     except Exception as e:
         if os.path.exists(temp_path):
             os.remove(temp_path)
-        logger.error(f"Error saving audio answer: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error saving audio answer: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not save audio answer. Please try again.")
 
 
 @router.get("/{session_id}/result", response_model=InterviewResult)
@@ -165,6 +234,8 @@ async def get_audio_result_get(
     # Fallback to generation if session exists
     try:
         return await get_audio_result(request, session_id, current_user, db)
+    except HTTPException as e:
+        raise e
     except Exception:
         raise HTTPException(status_code=404, detail="Result not found")
 
@@ -188,14 +259,53 @@ async def get_audio_result(
         if existing_db_res := existing_res.scalar_one_or_none():
             return existing_db_res.result_data
 
-        # Get warnings count before deleting session
-        stmt = select(InterviewSession).where(InterviewSession.id == session_id)
+        # Lock and mark the session so duplicate requests cannot generate twice.
+        stmt = select(InterviewSession).where(
+            InterviewSession.id == session_id,
+            InterviewSession.user_id == current_user.id,
+            InterviewSession.interview_type == "audio"
+        ).with_for_update()
         session_res = await db.execute(stmt)
         session = session_res.scalar_one_or_none()
-        warnings_count = session.warnings_count if session else 0
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found or unauthorized")
 
-        result_data = await audio_interview_service.generate_result(db, session_id)
-        result_data["warnings_count"] = warnings_count # Include for record
+        if session.result_status == "generating":
+            raise HTTPException(status_code=202, detail="Result generation is already in progress. Please try again shortly.")
+
+        # Block result generation until all questions have been answered
+        if session.question_number < len(session.questions or []):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Interview is still in progress. Please complete all questions (currently at {session.question_number}/{len(session.questions or [])}) before requesting the result."
+            )
+        history = session.history or []
+        questions = session.questions or []
+        transcripts_complete = (
+            len(history) == len(questions)
+            and all(
+                item is not None and not item.get("error") and item.get("answer_text")
+                for item in history
+            )
+        )
+        if not transcripts_complete:
+            raise HTTPException(status_code=202, detail="Interview is still processing. Please try again shortly.")
+
+        warnings_count = session.warnings_count if session else 0
+        session.result_status = "generating"
+        await db.commit()
+
+        try:
+            result_data = await audio_interview_service.generate_result(db, session_id)
+            result_data["warnings_count"] = warnings_count # Include for record
+        except Exception:
+            status_stmt = select(InterviewSession).where(InterviewSession.id == session_id).with_for_update()
+            status_res = await db.execute(status_stmt)
+            status_session = status_res.scalar_one_or_none()
+            if status_session:
+                status_session.result_status = "failed"
+                await db.commit()
+            raise
 
         # Delete previous audio results for this user
         delete_stmt = delete(DBInterviewResult).where(
@@ -220,11 +330,14 @@ async def get_audio_result(
         await db.commit()
         
         return result_data
+    except HTTPException:
+        raise
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning("Invalid audio result request for session %s: %s", session_id, e)
+        raise HTTPException(status_code=400, detail="Audio result is not available yet.")
     except Exception as e:
-        logger.error(f"Error generating audio result: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error generating audio result: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not generate audio result. Please try again.")
 
 
 @router.post("/{session_id}/warning")
@@ -236,7 +349,8 @@ async def report_warning(
     """Increments the warning counter for a session."""
     stmt = select(InterviewSession).where(
         InterviewSession.id == session_id,
-        InterviewSession.user_id == current_user.id
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.interview_type == "audio"
     )
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
@@ -263,8 +377,9 @@ async def report_malpractice(
     """Terminates a session due to malpractice."""
     stmt = update(InterviewSession).where(
         InterviewSession.id == session_id,
-        InterviewSession.user_id == current_user.id
-    ).values(is_active=False)
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.interview_type == "audio"
+    ).values(is_active=False, warnings_count=5)
     
     await db.execute(stmt)
     await db.commit()

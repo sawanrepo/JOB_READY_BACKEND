@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -39,6 +39,27 @@ from app.utils.logging import log_security_event
 
 router = APIRouter()
 
+
+def _set_refresh_token_cookie(response: Response, refresh_token: str) -> None:
+    response.set_cookie(
+        key=settings.REFRESH_TOKEN_COOKIE_NAME,
+        value=refresh_token,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        httponly=True,
+        secure=settings.REFRESH_TOKEN_COOKIE_SECURE,
+        samesite=settings.REFRESH_TOKEN_COOKIE_SAMESITE,
+        path="/auth",
+    )
+
+
+def _clear_refresh_token_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.REFRESH_TOKEN_COOKIE_NAME,
+        path="/auth",
+        secure=settings.REFRESH_TOKEN_COOKIE_SECURE,
+        samesite=settings.REFRESH_TOKEN_COOKIE_SAMESITE,
+    )
+
 @router.post("/register")
 @limiter.limit("3/minute")
 async def register(request: Request, user_data: UserCreate, db: AsyncSession = Depends(get_db)):
@@ -51,19 +72,26 @@ async def register(request: Request, user_data: UserCreate, db: AsyncSession = D
     
     return {"message": "OTP sent successfully to your email"}
 
-@router.post("/verify-otp", response_model=Token)
-async def verify_otp_endpoint(request: VerifyOTPRequest, db: AsyncSession = Depends(get_db)):
+@router.post("/verify-otp", response_model=Token, response_model_exclude_none=True)
+@limiter.limit("5/minute")
+async def verify_otp_endpoint(
+    request: Request,
+    response: Response,
+    body: VerifyOTPRequest,
+    db: AsyncSession = Depends(get_db)
+):
     try:
-        user = await verify_otp(request.email, request.otp, db)
+        user = await verify_otp(body.email, body.otp, db)
     except HTTPException as e:
-        log_security_event("LOGIN_FAILURE", "anonymous", {"method": "OTP", "email": request.email, "reason": str(e.detail)})
+        log_security_event("LOGIN_FAILURE", "anonymous", {"method": "OTP", "email": body.email, "reason": str(e.detail)})
         raise e
     
     access_token = create_access_token(
-        data={"sub": user.email},
+        data={"sub": user.email, "user_id": user.id},
         expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     refresh_token = create_refresh_token({"sub": user.email})
+    _set_refresh_token_cookie(response, refresh_token)
     
     log_security_event("LOGIN_SUCCESS", str(user.id), {"method": "OTP", "email": user.email})
 
@@ -71,7 +99,6 @@ async def verify_otp_endpoint(request: VerifyOTPRequest, db: AsyncSession = Depe
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "refresh_token": refresh_token,
         "user_id": user.id,
         "full_name": user.full_name,
         "email": user.email
@@ -116,10 +143,11 @@ async def change_password_endpoint(
     await change_password(current_user, request.current_password, request.new_password, db)
     return {"message": "Password changed successfully"}
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=Token, response_model_exclude_none=True)
 @limiter.limit("5/minute")
 async def login(
     request: Request,
+    response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
@@ -130,10 +158,11 @@ async def login(
         raise e
     
     access_token = create_access_token(
-        data={"sub": user.email},
+        data={"sub": user.email, "user_id": user.id},
         expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     refresh_token = create_refresh_token({"sub": user.email})
+    _set_refresh_token_cookie(response, refresh_token)
     
     log_security_event("LOGIN_SUCCESS", str(user.id), {"method": "PASSWORD", "email": user.email})
 
@@ -141,15 +170,15 @@ async def login(
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "refresh_token": refresh_token,
         "user_id": user.id,
         "full_name": user.full_name,
         "email": user.email
     }
 
-@router.post("/google-auth", response_model=Token)
+@router.post("/google-auth", response_model=Token, response_model_exclude_none=True)
 async def google_auth(
     request: GoogleAuthRequest,
+    response: Response,
     db: AsyncSession = Depends(get_db)
 ):
     try:
@@ -159,10 +188,11 @@ async def google_auth(
         raise e
     
     access_token = create_access_token(
-        data={"sub": user.email},
+        data={"sub": user.email, "user_id": user.id},
         expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     refresh_token = create_refresh_token({"sub": user.email})
+    _set_refresh_token_cookie(response, refresh_token)
     
     log_security_event("LOGIN_SUCCESS", str(user.id), {"method": "GOOGLE", "email": user.email})
 
@@ -170,15 +200,26 @@ async def google_auth(
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "refresh_token": refresh_token,
         "user_id": user.id,
         "full_name": user.full_name,
         "email": user.email
     }
 
-@router.post("/refresh", response_model=Token)
-async def refresh(refresh_token: str, db: AsyncSession = Depends(get_db)):
-    return await refresh_access_token(refresh_token, db)
+@router.post("/refresh", response_model=Token, response_model_exclude_none=True)
+async def refresh(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    token = request.cookies.get(settings.REFRESH_TOKEN_COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing refresh token")
+    return await refresh_access_token(token, db)
+
+
+@router.post("/logout")
+async def logout(response: Response):
+    _clear_refresh_token_cookie(response)
+    return {"message": "Logged out successfully"}
 
 @router.post("/set-password")
 async def set_password(

@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 import os
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://user:pass@host:port/dbname")
+FREE_SUBSCRIPTION_ID = 1
+FREE_ATS_CHECKS_PER_DAY = 1
+FREE_RESUME_TAILORING_PER_WEEK = 2
 
 # Create engine and session
 engine = create_engine(DATABASE_URL)
@@ -18,13 +21,15 @@ def reset_all_usage():
     now = datetime.now(timezone.utc)
 
     for user in users:
-        # Daily reset for ATS
-        user.ats_checks_left_today = user.subscription.max_ats_checks
+        # Subscriptions are disabled for launch; reset only free-plan base quotas.
+        user.subscription_id = FREE_SUBSCRIPTION_ID
+        user.subscription_expires_at = None
+        user.ats_checks_left_today = FREE_ATS_CHECKS_PER_DAY
         user.last_ats_check_at = now
 
         # Weekly reset (only run if Sunday)
         if now.weekday() == 6:  # Sunday
-            user.resume_tailoring_left_this_week = user.subscription.max_resume_tailoring
+            user.resume_tailoring_left_this_week = FREE_RESUME_TAILORING_PER_WEEK
             user.last_resume_tailoring_at = now
 
         # Monthly reset (only run if 1st)
