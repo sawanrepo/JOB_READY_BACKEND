@@ -172,6 +172,7 @@ class AudioInterviewService:
             retakes={},
             processing_status="idle",
             result_status="pending",
+            question_started_at=datetime.now(timezone.utc),
         )
         db.add(new_session)
         await db.flush()
@@ -219,7 +220,7 @@ class AudioInterviewService:
         retake_key = str(question_index)
         max_allowed = 300.0
         now = datetime.now(timezone.utc)
-        served_at = session.updated_at
+        served_at = session.question_started_at or session.updated_at
         if served_at.tzinfo is None:
             served_at = served_at.replace(tzinfo=timezone.utc)
         
@@ -239,6 +240,7 @@ class AudioInterviewService:
 
         # Update progress
         session.question_number = question_index + 1
+        session.question_started_at = datetime.now(timezone.utc)
         session.processing_status = "processing"
         await db.commit()
         
@@ -248,6 +250,52 @@ class AudioInterviewService:
             "question_text": session.questions[question_index],
             "audio_path": audio_path,
             "question_index": question_index
+        }
+
+    async def skip_audio_answer(self, db: AsyncSession, session_id: str, question_index: int, reason: str = "Candidate failed to answer this question within the time limit."):
+        stmt = select(InterviewSession).where(InterviewSession.id == session_id).with_for_update()
+        result = await db.execute(stmt)
+        session = result.scalar_one_or_none()
+
+        if not session:
+            raise ValueError("Session not found")
+
+        questions = session.questions or []
+        if question_index < 0 or question_index >= len(questions):
+            raise ValueError(f"Invalid question index: {question_index}. Total questions: {len(questions)}")
+
+        current_question_index = session.question_number or 0
+        if question_index < current_question_index:
+            return {
+                "session_id": session_id,
+                "question_index": question_index,
+                "duplicate": True,
+            }
+        if question_index != current_question_index:
+            raise ValueError(
+                f"Invalid question order: expected question index {current_question_index}, got {question_index}"
+            )
+
+        history = list(session.history or [])
+        while len(history) <= question_index:
+            history.append(None)
+
+        history[question_index] = {
+            "question": questions[question_index],
+            "answer_text": reason,
+            "status": "skipped",
+            "timestamp": str(uuid.uuid4()),
+        }
+        session.history = history
+        session.question_number = question_index + 1
+        session.question_started_at = datetime.now(timezone.utc)
+        session.processing_status = "completed" if session.question_number >= len(questions) else "idle"
+        await db.commit()
+
+        return {
+            "session_id": session_id,
+            "question_index": question_index,
+            "skipped": True,
         }
 
     async def process_stt_background(self, session_id: str, question_index: int, question_text: str, audio_path: str, db_factory):

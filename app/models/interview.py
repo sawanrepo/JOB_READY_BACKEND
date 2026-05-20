@@ -41,6 +41,7 @@ class InterviewSession(Base):
     retakes = Column(JSON, server_default='{}')
     processing_status = Column(String, server_default='idle')
     result_status = Column(String, server_default='pending')
+    question_started_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     

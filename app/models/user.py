@@ -41,5 +41,6 @@ class User(Base):
     last_ats_check_at = Column(DateTime(timezone=True), nullable=True)
     last_resume_tailoring_at = Column(DateTime(timezone=True), nullable=True)
     last_mock_interview_at = Column(DateTime(timezone=True), nullable=True)
+    last_audio_interview_at = Column(DateTime(timezone=True), nullable=True)
     # expire column
     subscription_expires_at = Column(DateTime(timezone=True), nullable=True)

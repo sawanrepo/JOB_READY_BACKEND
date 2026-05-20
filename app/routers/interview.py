@@ -63,6 +63,8 @@ async def get_active_sessions(
             "question_number": s.question_number,
             "processing_status": s.processing_status or "idle",
             "result_status": s.result_status or "pending",
+            "warnings_count": s.warnings_count or 0,
+            "is_active": s.is_active,
         } for s in sessions
     ]
 
@@ -86,7 +88,7 @@ async def get_session_status(
     
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-        
+
     return InterviewResponse(
         session_id=session.id,
         question=session.current_question or "Starting interview...",
@@ -194,6 +196,9 @@ async def process_response(
         validate_file_security(video, ALLOWED_VIDEO_EXTENSIONS, max_size_mb=50)
 
         content = await video.read()
+        if len(content) == 0:
+            raise HTTPException(status_code=400, detail="No video answer was recorded. Please record an answer before submitting.")
+
         async with aiofiles.open(temp_path, "wb") as out_file:
             await out_file.write(content)
 
@@ -217,6 +222,73 @@ async def process_response(
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+@router.post("/{session_id}/skip", response_model=InterviewResponse)
+@limiter.limit("10/minute")
+async def skip_response(
+    request: Request,
+    session_id: str,
+    reason: str = Form(default="Candidate failed to answer this question within the time limit."),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    session_stmt = select(InterviewSession).where(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.interview_type == "video",
+        InterviewSession.is_active == True
+    )
+    session_res = await db.execute(session_stmt)
+    session = session_res.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found, unauthorized, or already completed")
+
+    try:
+        response = await interview_service.skip_response(db, session_id, reason)
+        await db.commit()
+        return response
+    except ValueError as e:
+        logger.warning("Invalid video skip for session %s: %s", session_id, e)
+        raise HTTPException(status_code=400, detail="Could not skip this question.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error skipping video question: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not skip this question. Please try again.")
+
+
+@router.post("/{session_id}/resume-grace", response_model=InterviewResponse)
+@limiter.limit("5/minute")
+async def grant_resume_grace(
+    request: Request,
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    session_stmt = select(InterviewSession).where(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.interview_type == "video",
+        InterviewSession.is_active == True
+    )
+    session_res = await db.execute(session_stmt)
+    session = session_res.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found, unauthorized, or already completed")
+
+    try:
+        response = await interview_service.grant_resume_grace(db, session_id)
+        await db.commit()
+        return response
+    except ValueError as e:
+        logger.warning("Invalid resume grace request for session %s: %s", session_id, e)
+        raise HTTPException(status_code=400, detail="Could not resume this question.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error granting resume grace: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not resume this question. Please try again.")
 
 @router.get("/history/latest")
 @limiter.limit("5/minute")
@@ -414,7 +486,7 @@ async def report_warning(
         InterviewSession.id == session_id,
         InterviewSession.user_id == current_user.id,
         InterviewSession.interview_type == "video"
-    )
+    ).with_for_update()
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
     
@@ -451,4 +523,9 @@ async def report_malpractice(
     session.is_active = False
     session.warnings_count = max(session.warnings_count or 0, 5)
     await db.commit()
-    return {"status": "terminated", "message": "Interview ended due to malpractice."}
+    return {
+        "status": "terminated",
+        "message": "Interview ended due to malpractice.",
+        "warnings_count": session.warnings_count,
+        "is_active": session.is_active,
+    }

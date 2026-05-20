@@ -74,7 +74,7 @@ async def get_audio_session_status(
     
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-        
+
     return {
         "session_id": session.id,
         "questions": session.questions,
@@ -140,7 +140,9 @@ async def start_audio_interview(
 
 
 @router.post("/{session_id}/answer")
+@limiter.limit("10/minute")
 async def save_audio_answer(
+    request: Request,
     session_id: str,
     background_tasks: BackgroundTasks,
     question_index: int = Form(...),
@@ -171,6 +173,9 @@ async def save_audio_answer(
         validate_file_security(audio, ALLOWED_AUDIO_EXTENSIONS, max_size_mb=5)
         
         content = await audio.read()
+        if len(content) == 0:
+            raise HTTPException(status_code=400, detail="No audio answer was recorded. Please record an answer before submitting.")
+
         async with aiofiles.open(temp_path, "wb") as out_file:
             await out_file.write(content)
 
@@ -210,6 +215,38 @@ async def save_audio_answer(
             os.remove(temp_path)
         logger.error("Error saving audio answer: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="Could not save audio answer. Please try again.")
+
+
+@router.post("/{session_id}/skip")
+@limiter.limit("10/minute")
+async def skip_audio_answer(
+    request: Request,
+    session_id: str,
+    question_index: int = Form(...),
+    reason: str = Form(default="Candidate failed to answer this question within the time limit."),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    session_stmt = select(InterviewSession).where(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.interview_type == "audio",
+        InterviewSession.is_active == True
+    )
+    session_res = await db.execute(session_stmt)
+    session = session_res.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found, unauthorized, or already completed")
+
+    try:
+        context = await audio_interview_service.skip_audio_answer(db, session_id, question_index, reason)
+        return {"status": "skipped", **context}
+    except ValueError as e:
+        logger.warning("Invalid audio skip for session %s: %s", session_id, e)
+        raise HTTPException(status_code=400, detail="Could not skip this question.")
+    except Exception as e:
+        logger.error("Error skipping audio answer: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not skip this question. Please try again.")
 
 
 @router.get("/{session_id}/result", response_model=InterviewResult)
@@ -341,7 +378,9 @@ async def get_audio_result(
 
 
 @router.post("/{session_id}/warning")
+@limiter.limit("10/minute")
 async def report_warning(
+    request: Request,
     session_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -369,7 +408,9 @@ async def report_warning(
 
 
 @router.post("/{session_id}/malpractice")
+@limiter.limit("5/minute")
 async def report_malpractice(
+    request: Request,
     session_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)

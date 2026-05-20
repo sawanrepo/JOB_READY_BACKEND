@@ -15,55 +15,85 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+GEMINI_MODELS = [
+    'gemini-2.5-flash',
+    'gemini-3.0-flash',
+    'gemini-3.1-flash-lite-preview'
+]
+
+
+def _is_retryable_ai_error(err: Exception) -> bool:
+    err_str = str(err).lower()
+    retryable_markers = (
+        "500",
+        "502",
+        "503",
+        "504",
+        "internal",
+        "deadline",
+        "timeout",
+        "temporarily",
+        "overloaded",
+        "unavailable",
+        "high demand",
+    )
+    return any(marker in err_str for marker in retryable_markers)
+
+
+def _raise_ai_http_exception(err: Exception, context: str) -> None:
+    from fastapi import HTTPException
+
+    err_str = str(err)
+    err_lower = err_str.lower()
+    if "429" in err_str or "quota" in err_lower:
+        raise HTTPException(
+            status_code=429,
+            detail="AI service is temporarily rate-limited. Please wait a moment and try again."
+        )
+    if _is_retryable_ai_error(err):
+        raise HTTPException(
+            status_code=503,
+            detail="AI service is temporarily unavailable. Please try again shortly."
+        )
+    logger.error("%s failed after all fallbacks: %s", context, err_str)
+    raise HTTPException(status_code=500, detail="AI service failed. Please try again.")
+
+
 class InterviewService:
     def __init__(self):
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
         self.model_id = 'gemini-2.5-flash'
 
     async def _generate_content_with_fallback(self, prompt: str, system_instruction: str = None, response_mime_type: str = None, temperature: float = 0.8) -> str:
-        # Try gemini-2.5-flash first, then try highly stable backups
-        models = [
-            'gemini-2.5-flash',
-            'gemini-3.0-flash',
-            'gemini-3.1-flash-lite-preview'
-        ]
-        
         last_err = None
-        for model in models:
-            try:
-                logger.info(">>> LLM CALL START | Model: %s | Prompt chars: %d", model, len(prompt))
-                config_args = {"temperature": temperature}
-                if system_instruction:
-                    config_args["system_instruction"] = system_instruction
-                if response_mime_type:
-                    config_args["response_mime_type"] = response_mime_type
-                    
-                response = await self.client.aio.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(**config_args)
-                )
-                logger.info("<<< LLM CALL SUCCESS | Model: %s", model)
-                return response.text
-            except Exception as e:
-                logger.warning("LLM call failed for model %s: %s. Trying fallback...", model, e)
-                last_err = e
-        
-        # If all models failed, raise clean exception
-        err_str = str(last_err)
-        from fastapi import HTTPException
-        if "429" in err_str or "quota" in err_str.lower():
-            raise HTTPException(
-                status_code=429,
-                detail="AI service is temporarily rate-limited. Please wait a moment and try again."
-            )
-        if "503" in err_str or "overloaded" in err_str.lower() or "experiencing high demand" in err_str.lower():
-            raise HTTPException(
-                status_code=503,
-                detail="AI service is temporarily experiencing high demand. Please try again shortly."
-            )
-        logger.error("AI service error after all video fallbacks: %s", err_str)
-        raise HTTPException(status_code=500, detail="AI service failed. Please try again.")
+        for model in GEMINI_MODELS:
+            attempts = 2
+            for attempt in range(1, attempts + 1):
+                try:
+                    logger.info(">>> LLM CALL START | Model: %s | Prompt chars: %d | Attempt: %d", model, len(prompt), attempt)
+                    config_args = {"temperature": temperature}
+                    if system_instruction:
+                        config_args["system_instruction"] = system_instruction
+                    if response_mime_type:
+                        config_args["response_mime_type"] = response_mime_type
+
+                    response = await self.client.aio.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(**config_args)
+                    )
+                    logger.info("<<< LLM CALL SUCCESS | Model: %s | Attempt: %d", model, attempt)
+                    return response.text
+                except Exception as e:
+                    last_err = e
+                    if attempt < attempts and _is_retryable_ai_error(e):
+                        logger.warning("Retryable LLM failure for model %s on attempt %d: %s. Retrying...", model, attempt, e)
+                        await asyncio.sleep(1.5 * attempt)
+                        continue
+                    logger.warning("LLM call failed for model %s on attempt %d: %s. Trying fallback...", model, attempt, e)
+                    break
+
+        _raise_ai_http_exception(last_err, "AI service")
 
     async def start_interview(self, db: AsyncSession, user_id: int, request: InterviewStartRequest) -> InterviewResponse:
         # Check for any existing active session for this user
@@ -116,8 +146,10 @@ class InterviewService:
         return InterviewResponse(
             session_id=session_id,
             question=question,
-            question_number=1,
-            total_questions=8
+            question_number=new_session.question_number,
+            total_questions=8,
+            warnings_count=new_session.warnings_count or 0,
+            is_active=new_session.is_active
         )
 
     async def process_response(self, db: AsyncSession, session_id: str, video_path: str, retaken: bool = False) -> InterviewResponse:
@@ -136,7 +168,7 @@ class InterviewService:
         retake_key = str(session.question_number)
         max_allowed = 300.0
         now = datetime.now(timezone.utc)
-        served_at = session.updated_at
+        served_at = session.question_started_at or session.updated_at
         if served_at.tzinfo is None:
             served_at = served_at.replace(tzinfo=timezone.utc)
         
@@ -192,7 +224,81 @@ class InterviewService:
             question=next_q if not ended else "",
             question_number=session.question_number,
             total_questions=8,
-            interview_ended=ended
+            interview_ended=ended,
+            warnings_count=session.warnings_count or 0,
+            is_active=session.is_active
+        )
+
+    async def skip_response(self, db: AsyncSession, session_id: str, reason: str = "Candidate failed to answer this question within the time limit.") -> InterviewResponse:
+        stmt = select(InterviewSession).where(
+            InterviewSession.id == session_id,
+            InterviewSession.is_active == True
+        ).with_for_update()
+        result = await db.execute(stmt)
+        session = result.scalar_one_or_none()
+
+        if not session:
+            raise ValueError("Invalid or inactive session ID")
+
+        current_q = session.current_question
+        logger.info("Skipping video response for session %s, question %s: %s", session_id, session.question_number, reason)
+
+        new_history = list(session.history or [])
+        new_history.append({
+            "question": current_q,
+            "analysis": reason
+        })
+        session.history = new_history
+
+        next_q = await self._generate_next_question(db, session_id)
+        ended = next_q == "INTERVIEW_END"
+
+        if ended:
+            session.is_active = False
+            session.processing_status = "completed"
+        else:
+            session.processing_status = "idle"
+
+        return InterviewResponse(
+            session_id=session_id,
+            question=next_q if not ended else "",
+            question_number=session.question_number,
+            total_questions=8,
+            interview_ended=ended,
+            warnings_count=session.warnings_count or 0,
+            is_active=session.is_active
+        )
+
+    async def grant_resume_grace(self, db: AsyncSession, session_id: str) -> InterviewResponse:
+        stmt = select(InterviewSession).where(
+            InterviewSession.id == session_id,
+            InterviewSession.is_active == True
+        ).with_for_update()
+        result = await db.execute(stmt)
+        session = result.scalar_one_or_none()
+
+        if not session:
+            raise ValueError("Invalid or inactive session ID")
+
+        retakes = dict(session.retakes or {})
+        grace_key = "video_resume_grace_used"
+        if not retakes.get(grace_key):
+            retakes[grace_key] = {
+                "question_number": session.question_number,
+                "granted_at": datetime.now(timezone.utc).isoformat(),
+            }
+            session.retakes = retakes
+            session.question_started_at = datetime.now(timezone.utc)
+            logger.info("Granted one-time video resume grace for session %s, question %s", session_id, session.question_number)
+
+        return InterviewResponse(
+            session_id=session_id,
+            question=session.current_question or "Starting interview...",
+            question_number=session.question_number,
+            total_questions=8,
+            interview_ended=not session.is_active,
+            warnings_count=session.warnings_count or 0,
+            is_active=session.is_active
         )
 
     async def _generate_next_question(self, db: AsyncSession, session_id: str) -> str:
@@ -226,6 +332,7 @@ class InterviewService:
             raise
             
         session.current_question = next_q.strip()
+        session.question_started_at = datetime.now(timezone.utc)
         return session.current_question
 
     async def _analyze_video(self, video_path: str, question: str) -> str:
@@ -246,41 +353,33 @@ class InterviewService:
 
         prompt = INTERVIEW_ANALYSIS_PROMPT.format(question=question)
         
-        # Fallback for video analysis call
-        models = [
-            'gemini-2.5-flash',
-            'gemini-3.0-flash',
-            'gemini-3.1-flash-lite-preview'
-        ]
-        
         last_err = None
-        for model in models:
-            try:
-                logger.info(">>> LLM CALL START [_analyze_video] | Model: %s", model)
-                response = await self.client.aio.models.generate_content(
-                    model=model,
-                    contents=[prompt, video_file]
-                )
-                logger.info("<<< LLM CALL SUCCESS [_analyze_video] | Model: %s", model)
-                return response.text
-            except Exception as e:
-                logger.warning("LLM call failed for model %s during video analysis: %s. Trying fallback...", model, e)
-                last_err = e
-                
-        err_str = str(last_err)
-        from fastapi import HTTPException
-        if "429" in err_str or "quota" in err_str.lower():
-            raise HTTPException(
-                status_code=429,
-                detail="AI service is temporarily rate-limited. Please wait a moment and try again."
-            )
-        if "503" in err_str or "overloaded" in err_str.lower() or "experiencing high demand" in err_str.lower():
-            raise HTTPException(
-                status_code=503,
-                detail="AI service is temporarily experiencing high demand. Please try again shortly."
-            )
-        logger.error("AI video analysis failed after all fallbacks: %s", err_str)
-        raise HTTPException(status_code=500, detail="AI video analysis failed. Please try again.")
+        for model in GEMINI_MODELS:
+            attempts = 2
+            for attempt in range(1, attempts + 1):
+                try:
+                    logger.info(">>> LLM CALL START [_analyze_video] | Model: %s | Attempt: %d", model, attempt)
+                    response = await self.client.aio.models.generate_content(
+                        model=model,
+                        contents=[prompt, video_file]
+                    )
+                    logger.info("<<< LLM CALL SUCCESS [_analyze_video] | Model: %s | Attempt: %d", model, attempt)
+                    return response.text
+                except Exception as e:
+                    last_err = e
+                    if attempt < attempts and _is_retryable_ai_error(e):
+                        logger.warning(
+                            "Retryable video analysis failure for model %s on attempt %d: %s. Retrying...",
+                            model,
+                            attempt,
+                            e
+                        )
+                        await asyncio.sleep(1.5 * attempt)
+                        continue
+                    logger.warning("LLM call failed for model %s during video analysis on attempt %d: %s. Trying fallback...", model, attempt, e)
+                    break
+
+        _raise_ai_http_exception(last_err, "AI video analysis")
 
     async def generate_result(self, db: AsyncSession, session_id: str) -> InterviewResult:
         stmt = select(InterviewSession).where(InterviewSession.id == session_id)
