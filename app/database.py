@@ -7,8 +7,18 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     future=True,
     echo=False,
-    pool_size=20,
-    max_overflow=10
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=5,
+    max_overflow=5,
+    pool_timeout=30,
+    pool_use_lifo=True,
+    connect_args={
+        "timeout": 30,
+        "server_settings": {
+            "application_name": "job-ready-api",
+        },
+    },
 )
 
 async_session = sessionmaker(
