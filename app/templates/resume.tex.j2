@@ -7,6 +7,7 @@
 \usepackage{xcolor}
 \usepackage{enumitem}
 \usepackage[hidelinks]{hyperref}
+\usepackage{fontawesome}
 
 \titleformat{\section}{\large\bfseries\color{blue}}{}{0em}{}[\titlerule]
 \setlist[itemize]{leftmargin=1.2em, itemsep=\VAR{content.itemsep | default("3pt")}, parsep=0pt, topsep=2pt, partopsep=0pt}
@@ -119,9 +120,9 @@
 \textbf{\VAR{edu.degree}}%
 \BLOCK{ if edu["start\\_date"] or edu["end\\_date"] }
     \hfill
-    \BLOCK{ if edu["start\\_date"] }\VAR{edu["start\\_date"]}\BLOCK{ endif }%
+    \BLOCK{ if edu["start\\_date"] }\VAR{edu["start_date"]}\BLOCK{ endif }%
     \BLOCK{ if edu["start\\_date"] and edu["end\\_date"] } -- \BLOCK{ endif }%
-    \BLOCK{ if edu["end\\_date"] }\VAR{edu["end\\_date"]}\BLOCK{ endif }
+    \BLOCK{ if edu["end\\_date"] }\VAR{edu["end_date"]}\BLOCK{ endif }
 \BLOCK{ endif }\\
 {\color{blue} \VAR{edu.institution}}\\
 
