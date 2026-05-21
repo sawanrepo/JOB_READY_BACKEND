@@ -175,15 +175,55 @@ class InterviewService:
         elapsed_seconds = (now - served_at).total_seconds()
         if elapsed_seconds > max_allowed:
             if retakes.get(retake_key):
-                raise ValueError("Answer submission timed out. The retake allowance for this question has already been used.")
-            max_allowed = 360.0
-            if elapsed_seconds <= max_allowed:
+                max_allowed = 300.0
+            elif elapsed_seconds <= 360.0:
+                max_allowed = 360.0
                 retakes[retake_key] = True
                 session.retakes = retakes
 
         if elapsed_seconds > max_allowed:
-            raise ValueError(
-                f"Security alert: Answer submission timed out. You took {elapsed_seconds:.0f} seconds, which exceeds the maximum allowed time of {max_allowed:.0f} seconds."
+            current_q = session.current_question
+            new_history = list(session.history or [])
+            new_history.append({
+                "question": current_q,
+                "analysis": (
+                    "Candidate failed to answer this question within the time limit. "
+                    f"Elapsed time: {elapsed_seconds:.0f} seconds."
+                ),
+                "status": "timed_out",
+            })
+            session.history = new_history
+
+            try:
+                next_q = await self._generate_next_question(db, session_id)
+            except Exception:
+                session.processing_status = "failed"
+                await db.commit()
+                raise
+
+            ended = next_q == "INTERVIEW_END"
+            if ended:
+                session.is_active = False
+                session.processing_status = "completed"
+            else:
+                session.processing_status = "idle"
+
+            logger.info(
+                "Video response timed out for session %s, question %s after %.0fs; advanced to question %s",
+                session_id,
+                retake_key,
+                elapsed_seconds,
+                session.question_number,
+            )
+
+            return InterviewResponse(
+                session_id=session_id,
+                question=next_q if not ended else "",
+                question_number=session.question_number,
+                total_questions=8,
+                interview_ended=ended,
+                warnings_count=session.warnings_count or 0,
+                is_active=session.is_active,
             )
         
         current_q = session.current_question

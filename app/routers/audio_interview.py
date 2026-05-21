@@ -187,7 +187,19 @@ async def save_audio_answer(
         if context.get("duplicate"):
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-            return {"status": "processing", "message": "Audio answer was already received and is processing."}
+            return {
+                "status": "duplicate",
+                "message": "Audio answer was already received.",
+                "current_question_index": context.get("current_question_index"),
+            }
+        if context.get("timed_out"):
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return {
+                "status": "timed_out",
+                "message": "This question timed out and the interview moved to the next question.",
+                "current_question_index": context.get("current_question_index"),
+            }
         
         # Trigger background STT
         background_tasks.add_task(
@@ -199,7 +211,11 @@ async def save_audio_answer(
             db_factory=async_session
         )
         
-        return {"status": "processing", "message": "Audio received and processing started."}
+        return {
+            "status": "processing",
+            "message": "Audio received and processing started.",
+            "current_question_index": context.get("current_question_index"),
+        }
         
     except ValueError as e:
         if os.path.exists(temp_path):

@@ -13,6 +13,22 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 logger = logging.getLogger(__name__)
 
 
+def _tail_text(value: str, max_chars: int = 4000) -> str:
+    if not value:
+        return ""
+    return value[-max_chars:]
+
+
+def _read_log_tail(path: str, max_chars: int = 4000) -> str:
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return _tail_text(f.read(), max_chars)
+    except Exception:
+        return ""
+
+
 def _run_latex(latex_command: str, tex_filename: str, work_dir: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [latex_command, "-interaction=nonstopmode", "-no-shell-escape", tex_filename],
@@ -24,6 +40,31 @@ def _run_latex(latex_command: str, tex_filename: str, work_dir: str) -> subproce
 
 def escape_latex_deep(value):
     if isinstance(value, str):
+        unicode_replacements = {
+            "\u00a0": " ",
+            "\u200b": "",
+            "\u200c": "",
+            "\u200d": "",
+            "\u2010": "-",
+            "\u2011": "-",
+            "\u2012": "-",
+            "\u2013": "-",
+            "\u2014": "-",
+            "\u2018": "'",
+            "\u2019": "'",
+            "\u201c": '"',
+            "\u201d": '"',
+            "\u2022": "-",
+            "\u2026": "...",
+            "\u2192": "->",
+            "\u2190": "<-",
+            "\u2264": "<=",
+            "\u2265": ">=",
+            "\u00d7": "x",
+        }
+        for original, replacement in unicode_replacements.items():
+            value = value.replace(original, replacement)
+
         replacements = {
             '&': r'\&',
             '%': r'\%',
@@ -41,6 +82,7 @@ def escape_latex_deep(value):
         }
         regex = re.compile('|'.join(re.escape(k) for k in replacements))
         value =  regex.sub(lambda m: replacements[m.group()], value)
+        value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", value)
         value = value.replace('--', '-{}-')
         return value
 
@@ -226,6 +268,13 @@ def compile_latex_to_pdf(tex_content: str, output_dir: str = "output", content: 
                 f.write(last_result.stdout)
             with open(os.path.join(work_dir, "latex_stderr.log"), "w") as f:
                 f.write(last_result.stderr)
+            logger.error(
+                "LaTeX compiler error detail for %s\nstdout tail:\n%s\nstderr tail:\n%s\nlatex log tail:\n%s",
+                work_dir,
+                _tail_text(last_result.stdout),
+                _tail_text(last_result.stderr),
+                _read_log_tail(log_work_path),
+            )
             raise RuntimeError(error_detail)
         
         # Verify PDF exists and has content

@@ -208,6 +208,7 @@ class AudioInterviewService:
                 "question_text": session.questions[question_index],
                 "audio_path": audio_path,
                 "question_index": question_index,
+                "current_question_index": current_question_index,
                 "duplicate": True,
             }
         if question_index != current_question_index:
@@ -227,16 +228,48 @@ class AudioInterviewService:
         elapsed_seconds = (now - served_at).total_seconds()
         if elapsed_seconds > max_allowed:
             if retakes.get(retake_key):
-                raise ValueError("Answer submission timed out. The retake allowance for this question has already been used.")
-            max_allowed = 360.0
-            if elapsed_seconds <= max_allowed:
+                max_allowed = 300.0
+            elif elapsed_seconds <= 360.0:
+                max_allowed = 360.0
                 retakes[retake_key] = True
                 session.retakes = retakes
 
         if elapsed_seconds > max_allowed:
-            raise ValueError(
-                f"Security alert: Answer submission timed out. You took {elapsed_seconds:.0f} seconds, which exceeds the maximum allowed time of {max_allowed:.0f} seconds."
+            questions = session.questions or []
+            history = list(session.history or [])
+            while len(history) <= question_index:
+                history.append(None)
+
+            history[question_index] = {
+                "question": questions[question_index],
+                "answer_text": "Candidate failed to answer this question within the time limit.",
+                "status": "timed_out",
+                "elapsed_seconds": round(elapsed_seconds),
+                "timestamp": str(uuid.uuid4()),
+            }
+
+            session.history = history
+            session.question_number = question_index + 1
+            session.question_started_at = now
+            session.processing_status = "completed" if session.question_number >= len(questions) else "idle"
+            await db.commit()
+
+            logger.info(
+                "Audio answer timed out for session %s, question %s after %.0fs; advanced to question %s",
+                session_id,
+                question_index,
+                elapsed_seconds,
+                session.question_number,
             )
+
+            return {
+                "session_id": session_id,
+                "question_text": questions[question_index],
+                "audio_path": audio_path,
+                "question_index": question_index,
+                "current_question_index": session.question_number,
+                "timed_out": True,
+            }
 
         # Update progress
         session.question_number = question_index + 1
@@ -249,7 +282,8 @@ class AudioInterviewService:
             "session_id": session_id,
             "question_text": session.questions[question_index],
             "audio_path": audio_path,
-            "question_index": question_index
+            "question_index": question_index,
+            "current_question_index": session.question_number,
         }
 
     async def skip_audio_answer(self, db: AsyncSession, session_id: str, question_index: int, reason: str = "Candidate failed to answer this question within the time limit."):
