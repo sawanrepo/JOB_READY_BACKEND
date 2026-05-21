@@ -24,7 +24,12 @@ from app.utils.s3 import upload_file_to_s3, delete_file_from_s3, get_file_from_s
 logger = logging.getLogger(__name__)
 
 
-from app.utils.validation import validate_job_description, validate_resume_text
+from app.utils.validation import (
+    get_job_input_note,
+    get_job_input_type,
+    validate_job_target,
+    validate_resume_text,
+)
 
 from datetime import datetime, timedelta, timezone
 
@@ -32,6 +37,14 @@ from app.utils.limiter import limiter
 
 router = APIRouter()
 OUTPUT_DIR = Path("output").resolve()
+
+
+def _attach_job_input_metadata(payload: dict, job_input: str) -> dict:
+    payload["job_input_type"] = get_job_input_type(job_input)
+    note = get_job_input_note(job_input)
+    if note:
+        payload["result_note"] = note
+    return payload
 
 
 def _delete_legacy_local_resume(file_path: str | None, context: str) -> None:
@@ -73,7 +86,7 @@ async def ats_check(
 ):
     try:
         # 1. Extract and Validate inputs first (before reserving credits)
-        validate_job_description(job_description)
+        validate_job_target(job_description)
         resume_text = await extract_text_from_pdf(resume_pdf)
         validate_resume_text(resume_text)
 
@@ -87,6 +100,7 @@ async def ats_check(
         try:
             # 2. AI Analysis
             result_dict = await run_analyze_resume(resume_text, job_description)
+            _attach_job_input_metadata(result_dict, job_description)
             
             # Check if AI identified it as a non-resume
             if not result_dict.get("is_resume", True):
@@ -140,7 +154,7 @@ async def tailor_resume_endpoint(
 ):
     try:
         # 1. Extract and Validate inputs first (before reserving credits)
-        validate_job_description(job_description)
+        validate_job_target(job_description)
         resume_text = await extract_text_from_pdf(resume_pdf)
         validate_resume_text(resume_text)
         await resume_pdf.seek(0)
@@ -155,6 +169,9 @@ async def tailor_resume_endpoint(
         try:
             # 2. AI Tailoring
             result_dict = await tailor_resume(resume_pdf, job_description)
+            _attach_job_input_metadata(result_dict, job_description)
+            if isinstance(result_dict.get("tailored_content"), dict):
+                _attach_job_input_metadata(result_dict["tailored_content"], job_description)
             
             # Check if AI identified it as a non-resume
             if not result_dict.get("is_resume", True):
@@ -238,7 +255,7 @@ async def tailor_resume_propose_endpoint(
 ):
     try:
         # 1. Extract and Validate inputs first (before reserving credits)
-        validate_job_description(job_description)
+        validate_job_target(job_description)
         resume_text = await extract_text_from_pdf(resume_pdf)
         validate_resume_text(resume_text)
 
@@ -252,6 +269,7 @@ async def tailor_resume_propose_endpoint(
         try:
             # 2. AI Proposing
             tailored_content = await propose_tailor_resume(resume_text, job_description)
+            _attach_job_input_metadata(tailored_content, job_description)
             
             # Check if AI identified it as a non-resume
             if not tailored_content.get("is_resume", True):
@@ -338,7 +356,9 @@ async def tailor_resume_generate_endpoint(
             tailored_content=tailored_content,
             filename=result_dict["filename"],
             pdf_url=result_dict["pdf_url"],
-            is_resume=True
+            is_resume=True,
+            job_input_type=content_dict.get("job_input_type"),
+            result_note=content_dict.get("result_note")
         )
     except Exception as e:
         if isinstance(e, HTTPException):

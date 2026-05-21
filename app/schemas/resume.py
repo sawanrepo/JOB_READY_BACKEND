@@ -18,6 +18,8 @@ class ResumeAnalysisResponse(BaseModel):
     improvement_suggestions: List[str] = []
     is_resume: bool = True
     error_message: Optional[str] = None
+    job_input_type: Optional[str] = None
+    result_note: Optional[str] = None
 
 
 class PersonalInfo(BaseModel):
@@ -64,6 +66,8 @@ class TailoredContent(BaseModel):
     projects: Optional[List[ProjectItem]] = None
     education: Optional[List[EducationItem]] = None
     certifications: Optional[List[CertificationItem]] = None
+    job_input_type: Optional[str] = None
+    result_note: Optional[str] = None
 
 class TailoredResumeResponse(BaseModel):
     tailored_content: Optional[TailoredContent] = None
@@ -71,3 +75,5 @@ class TailoredResumeResponse(BaseModel):
     pdf_url: Optional[str] = None
     is_resume: bool = True
     error_message: Optional[str] = None
+    job_input_type: Optional[str] = None
+    result_note: Optional[str] = None

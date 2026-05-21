@@ -1,6 +1,7 @@
 ATS_ANALYSIS_PROMPT = """
 You are an expert ATS (Applicant Tracking System) scanner and resume analyst.
 Analyze the provided resume and job description for ATS compatibility and recruiter appeal.
+If a full job description is not provided, evaluate using the job role or resume context only.
 
 Return a JSON response with the following fields:
 
@@ -52,6 +53,7 @@ JOB DESCRIPTION:
 TAILOR_RESUME_PROMPT = """
 You are an elite, professional resume optimization writer and expert ATS (Applicant Tracking System) strategist.
 Your task is to tailor the candidate's resume to match the given job description so perfectly that it achieves an ATS compatibility score of 85+ out of 100.
+If a full job description is not provided, tailor using the job role or resume context only.
 
 Optimizing Goals:
 1. **Keyword Optimization**:
