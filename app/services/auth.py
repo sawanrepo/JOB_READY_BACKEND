@@ -22,8 +22,16 @@ import asyncio
 from app.utils.email import send_otp_email, send_password_reset_email
 
 
+REGISTRATION_INTERVIEW_CREDITS = 1
+
+
 def generate_otp(length=6):
     return ''.join(secrets.choice(string.digits) for _ in range(length))
+
+
+def grant_registration_interview_credits(user: User) -> None:
+    user.mock_interviews_left = max(user.mock_interviews_left or 0, REGISTRATION_INTERVIEW_CREDITS)
+    user.audio_interviews_left = max(user.audio_interviews_left or 0, REGISTRATION_INTERVIEW_CREDITS)
 
 
 async def authenticate_user(email: str, password: str, db) -> User:
@@ -83,6 +91,7 @@ async def create_user(email: str, password: str, full_name: str, db) -> User:
             user.full_name = full_name
             user.otp = otp_hash
             user.otp_created_at = datetime.now(timezone.utc)
+            grant_registration_interview_credits(user)
     else:
         user = User(
             email=email,
@@ -91,7 +100,9 @@ async def create_user(email: str, password: str, full_name: str, db) -> User:
             is_active=True,
             is_verified=False,
             otp=otp_hash,
-            otp_created_at=datetime.now(timezone.utc)
+            otp_created_at=datetime.now(timezone.utc),
+            mock_interviews_left=REGISTRATION_INTERVIEW_CREDITS,
+            audio_interviews_left=REGISTRATION_INTERVIEW_CREDITS,
         )
         db.add(user)
 
@@ -335,6 +346,8 @@ async def handle_google_oauth(code: str, db, redirect_uri: str | None = None) ->
             google_id=user_info["sub"],
             is_active=True,
             is_verified=True,
+            mock_interviews_left=REGISTRATION_INTERVIEW_CREDITS,
+            audio_interviews_left=REGISTRATION_INTERVIEW_CREDITS,
         )
         db.add(new_user)
         await db.commit()
