@@ -32,11 +32,11 @@ PLAN_PRICES = {
     "ats_one_time": {"amount": 900, "plan_id": 0},         # ₹9
     "tailor_one_time": {"amount": 1900, "plan_id": 0},      # ₹19
     "audio_one_time": {"amount": 3900, "plan_id": 0},      # ₹39
-    "video_one_time": {"amount": 8900, "plan_id": 0},      # ₹89
-    "starter_pack": {"amount": 3900, "plan_id": 0},        # ₹39
-    "resume_boost_pack": {"amount": 8900, "plan_id": 0},   # ₹89
-    "interview_pack": {"amount": 13900, "plan_id": 0},     # ₹139
-    "combo_pack": {"amount": 24900, "plan_id": 0},         # ₹249
+    "video_one_time": {"amount": 3900, "plan_id": 0},      # ₹39 early-user offer
+    "starter_pack": {"amount": 1300, "plan_id": 0},        # ₹13
+    "resume_boost_pack": {"amount": 2500, "plan_id": 0},   # ₹25
+    "interview_pack": {"amount": 4900, "plan_id": 0},      # ₹49
+    "combo_pack": {"amount": 9900, "plan_id": 0},          # ₹99
 }
 
 SUBSCRIPTION_PLAN_NAMES = {"pro", "pro_plus"}
@@ -119,11 +119,11 @@ async def process_verified_payment(
 
     # Individual Packs
     if plan_name == "ats_one_time":
-        user.purchased_ats_credits = (user.purchased_ats_credits or 0) + 1
+        user.purchased_ats_credits = (user.purchased_ats_credits or 0) + 3
     elif plan_name == "tailor_one_time":
-        user.purchased_tailor_credits = (user.purchased_tailor_credits or 0) + 1
+        user.purchased_tailor_credits = (user.purchased_tailor_credits or 0) + 3
     elif plan_name == "audio_one_time":
-        user.audio_interviews_left = (user.audio_interviews_left or 0) + 1
+        user.audio_interviews_left = (user.audio_interviews_left or 0) + 3
     elif plan_name == "video_one_time":
         user.mock_interviews_left = (user.mock_interviews_left or 0) + 1
     

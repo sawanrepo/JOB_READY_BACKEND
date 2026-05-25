@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     
     # Gemini
     GEMINI_API_KEY: str = Field(..., env="GEMINI_API_KEY")
+    GEMINI_API_KEY_BACKUP: Optional[str] = Field(default=None, env="GEMINI_API_KEY_BACKUP")
 
     # Razorpay
     RAZORPAY_KEY_ID: str = Field(..., env="RAZORPAY_KEY_ID")

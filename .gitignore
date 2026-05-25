@@ -21,3 +21,9 @@ list_models.py
 temp_audios/
 temp_videos/
 logs/
+check_gemini_backup_models.py
+check_gemini_live_models.py
+.dockerignore
+Dockerfile
+docker-compose.backend.yml
+.env.docker.example

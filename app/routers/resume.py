@@ -84,6 +84,7 @@ async def ats_check(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    user_id = current_user.id
     try:
         # 1. Extract and Validate inputs first (before reserving credits)
         validate_job_target(job_description)
@@ -94,7 +95,7 @@ async def ats_check(
         # It acquires a SELECT FOR UPDATE row lock, checks credits, and deducts
         # in a single atomic step — no separate eligibility check, no TOCTOU gap.
         # Raises HTTP 403 automatically if credits are zero.
-        credit_type = await deduct_feature_usage_atomic(db, current_user.id, "ats_check")
+        credit_type = await deduct_feature_usage_atomic(db, user_id, "ats_check")
         await db.commit()  # Save reservation immediately so concurrent requests see it
 
         try:
@@ -110,7 +111,7 @@ async def ats_check(
         except Exception as ai_err:
             # AI failed or invalid resume — refund the reserved credit
             logger.error(f"ATS Analysis failed after reservation, refunding: {ai_err}")
-            await refund_feature_usage_atomic(db, current_user.id, "ats_check", credit_type)
+            await refund_feature_usage_atomic(db, user_id, "ats_check", credit_type)
             await db.commit()
             raise
 
@@ -128,13 +129,13 @@ async def ats_check(
     
     # Update History: Delete old ATS and save new one
     delete_stmt = delete(DBResumeHistory).where(
-        DBResumeHistory.user_id == current_user.id,
+        DBResumeHistory.user_id == user_id,
         DBResumeHistory.history_type == "ats"
     )
     await db.execute(delete_stmt)
     
     new_history = DBResumeHistory(
-        user_id=current_user.id,
+        user_id=user_id,
         history_type="ats",
         result_data=result.model_dump() if hasattr(result, "model_dump") else result
     )
@@ -152,6 +153,7 @@ async def tailor_resume_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    user_id = current_user.id
     try:
         # 1. Extract and Validate inputs first (before reserving credits)
         validate_job_target(job_description)
@@ -163,7 +165,7 @@ async def tailor_resume_endpoint(
         # It acquires a SELECT FOR UPDATE row lock, checks credits, and deducts
         # in a single atomic step — no separate eligibility check, no TOCTOU gap.
         # Raises HTTP 403 automatically if credits are zero.
-        credit_type = await deduct_feature_usage_atomic(db, current_user.id, "resume_tailoring")
+        credit_type = await deduct_feature_usage_atomic(db, user_id, "resume_tailoring")
         await db.commit()  # Save reservation immediately so concurrent requests see it
 
         try:
@@ -181,7 +183,7 @@ async def tailor_resume_endpoint(
         except Exception as ai_err:
             # AI failed or invalid resume — refund the reserved credit
             logger.error(f"Resume tailoring failed after reservation, refunding: {ai_err}")
-            await refund_feature_usage_atomic(db, current_user.id, "resume_tailoring", credit_type)
+            await refund_feature_usage_atomic(db, user_id, "resume_tailoring", credit_type)
             await db.commit()
             raise
 
@@ -201,24 +203,24 @@ async def tailor_resume_endpoint(
             raise HTTPException(status_code=500, detail="Failed to generate tailored resume PDF locally.")
 
         old_tailor_stmt = select(DBResumeHistory).where(
-            DBResumeHistory.user_id == current_user.id,
+            DBResumeHistory.user_id == user_id,
             DBResumeHistory.history_type == "tailor"
         )
         old_tailor = (await db.execute(old_tailor_stmt)).scalar_one_or_none()
 
-        s3_key = f"tailored_resumes/{current_user.id}/resume.pdf"
+        s3_key = f"tailored_resumes/{user_id}/resume.pdf"
         upload_success = await upload_file_to_s3(local_pdf_path, s3_key)
         if not upload_success:
             raise HTTPException(status_code=500, detail="Failed to upload tailored resume to secure S3 storage.")
 
         delete_stmt = delete(DBResumeHistory).where(
-            DBResumeHistory.user_id == current_user.id,
+            DBResumeHistory.user_id == user_id,
             DBResumeHistory.history_type == "tailor"
         )
         await db.execute(delete_stmt)
 
         new_history = DBResumeHistory(
-            user_id=current_user.id,
+            user_id=user_id,
             history_type="tailor",
             result_data={"filename": "resume.pdf", "s3_key": s3_key, "editable_draft": False},
             file_path=s3_key
@@ -230,7 +232,7 @@ async def tailor_resume_endpoint(
     except Exception as storage_err:
         await db.rollback()
         logger.error("Resume tailoring storage failed after reservation, refunding: %s", storage_err)
-        await refund_feature_usage_atomic(db, current_user.id, "resume_tailoring", credit_type)
+        await refund_feature_usage_atomic(db, user_id, "resume_tailoring", credit_type)
         await db.commit()
         _delete_local_file(local_pdf_path, "tailor storage failure")
         if isinstance(storage_err, HTTPException):
@@ -253,6 +255,7 @@ async def tailor_resume_propose_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    user_id = current_user.id
     try:
         # 1. Extract and Validate inputs first (before reserving credits)
         validate_job_target(job_description)
@@ -263,7 +266,7 @@ async def tailor_resume_propose_endpoint(
         # It acquires a SELECT FOR UPDATE row lock, checks credits, and deducts
         # in a single atomic step — no separate eligibility check, no TOCTOU gap.
         # Raises HTTP 403 automatically if credits are zero.
-        credit_type = await deduct_feature_usage_atomic(db, current_user.id, "resume_tailoring")
+        credit_type = await deduct_feature_usage_atomic(db, user_id, "resume_tailoring")
         await db.commit()  # Save reservation immediately so concurrent requests see it
 
         try:
@@ -281,12 +284,12 @@ async def tailor_resume_propose_endpoint(
                 result_dict = await generate_tailored_pdf(tailored_content)
 
                 old_tailor_stmt = select(DBResumeHistory).where(
-                    DBResumeHistory.user_id == current_user.id,
+                    DBResumeHistory.user_id == user_id,
                     DBResumeHistory.history_type == "tailor"
                 )
                 old_tailor = (await db.execute(old_tailor_stmt)).scalar_one_or_none()
 
-                s3_key = f"tailored_resumes/{current_user.id}/resume.pdf"
+                s3_key = f"tailored_resumes/{user_id}/resume.pdf"
                 if not result_dict.get("filename"):
                     raise RuntimeError("Failed to generate default tailored resume PDF locally.")
 
@@ -296,13 +299,13 @@ async def tailor_resume_propose_endpoint(
                     raise RuntimeError("Failed to upload tailored resume proposal to secure S3 storage.")
 
                 delete_stmt = delete(DBResumeHistory).where(
-                    DBResumeHistory.user_id == current_user.id,
+                    DBResumeHistory.user_id == user_id,
                     DBResumeHistory.history_type == "tailor"
                 )
                 await db.execute(delete_stmt)
 
                 new_history = DBResumeHistory(
-                    user_id=current_user.id,
+                    user_id=user_id,
                     history_type="tailor",
                     result_data={"filename": "resume.pdf", "s3_key": s3_key, "editable_draft": True},
                     file_path=s3_key
@@ -321,7 +324,7 @@ async def tailor_resume_propose_endpoint(
         except Exception as ai_err:
             # AI failed or invalid resume — refund the reserved credit
             logger.error(f"Resume tailoring proposal failed after reservation, refunding: {ai_err}")
-            await refund_feature_usage_atomic(db, current_user.id, "resume_tailoring", credit_type)
+            await refund_feature_usage_atomic(db, user_id, "resume_tailoring", credit_type)
             await db.commit()
             raise
 
@@ -339,8 +342,9 @@ async def tailor_resume_generate_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    user_id = current_user.id
     old_tailor_stmt = select(DBResumeHistory).where(
-        DBResumeHistory.user_id == current_user.id,
+        DBResumeHistory.user_id == user_id,
         DBResumeHistory.history_type == "tailor"
     )
     old_tailor = (await db.execute(old_tailor_stmt)).scalar_one_or_none()
@@ -367,7 +371,7 @@ async def tailor_resume_generate_endpoint(
         raise HTTPException(status_code=500, detail="Resume tailoring compilation failed. Please try again.")
 
     # Upload new tailored resume to S3
-    s3_key = f"tailored_resumes/{current_user.id}/resume.pdf"
+    s3_key = f"tailored_resumes/{user_id}/resume.pdf"
     if result.filename:
         local_pdf_path = str(OUTPUT_DIR / result.filename)
         upload_success = await upload_file_to_s3(local_pdf_path, s3_key)
@@ -383,13 +387,13 @@ async def tailor_resume_generate_endpoint(
         raise HTTPException(status_code=500, detail="Failed to generate tailored resume PDF locally.")
 
     delete_stmt = delete(DBResumeHistory).where(
-        DBResumeHistory.user_id == current_user.id,
+        DBResumeHistory.user_id == user_id,
         DBResumeHistory.history_type == "tailor"
     )
     await db.execute(delete_stmt)
     
     new_history = DBResumeHistory(
-        user_id=current_user.id,
+        user_id=user_id,
         history_type="tailor",
         result_data={"filename": "resume.pdf", "s3_key": s3_key, "editable_draft": False},
         file_path=s3_key

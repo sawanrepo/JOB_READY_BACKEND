@@ -86,7 +86,7 @@ app.state.limiter = limiter
 def custom_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
     return JSONResponse(
         status_code=429,
-        content={"detail": f"Rate limit exceeded: {exc.detail}"}
+        content={"detail": "Too many requests. Please wait a moment and try again."}
     )
 
 

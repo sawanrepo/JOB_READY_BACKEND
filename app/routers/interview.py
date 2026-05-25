@@ -1,5 +1,5 @@
 from app.schemas.interview import InterviewStartRequest, InterviewResponse, InterviewResult
-from app.services.interview_service import InterviewService
+from app.services.interview_service import InterviewService, VIDEO_TOTAL_QUESTIONS
 from app.utils.auth import get_current_user
 from app.utils.usage import deduct_feature_usage_atomic, refund_feature_usage_atomic
 
@@ -10,20 +10,49 @@ from app.models.user import User
 from app.models.interview import InterviewResult as DBInterviewResult
 from app.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import Depends, APIRouter, UploadFile, File, HTTPException, Form, Request
+from fastapi import Depends, APIRouter, UploadFile, File, HTTPException, Form, Request, WebSocket, WebSocketDisconnect
 from datetime import datetime, timezone
 import shutil
 import os
 import uuid
 import logging
+import json
 from sqlalchemy import select, desc, delete
 from sqlalchemy.exc import IntegrityError
 from app.utils.limiter import limiter
+from app.utils.security import verify_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 interview_service = InterviewService()
+
+
+def _response_to_dict(response: InterviewResponse) -> dict:
+    if hasattr(response, "model_dump"):
+        return response.model_dump()
+    return response.dict()
+
+
+async def _get_websocket_user(websocket: WebSocket, db: AsyncSession) -> User | None:
+    token = websocket.query_params.get("token")
+    if not token:
+        return None
+
+    try:
+        payload = verify_token(token)
+        email = payload.get("sub")
+        token_type = payload.get("type")
+        if not email or token_type != "access":
+            return None
+    except Exception:
+        return None
+
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalars().first()
+    if not user or not user.is_active:
+        return None
+    return user
 
 
 def _latest_interview_history_item(record: DBInterviewResult | None, interview_type: str) -> dict:
@@ -34,6 +63,7 @@ def _latest_interview_history_item(record: DBInterviewResult | None, interview_t
         }
 
     return {
+        "session_id": record.session_id,
         "created_at": record.created_at.isoformat() if record.created_at else None,
         "display_label": f"Latest {interview_type} interview",
     }
@@ -93,7 +123,7 @@ async def get_session_status(
         session_id=session.id,
         question=session.current_question or "Starting interview...",
         question_number=session.question_number,
-        total_questions=10 if session.interview_type == "audio" else 8,
+        total_questions=10 if session.interview_type == "audio" else VIDEO_TOTAL_QUESTIONS,
         interview_ended=not session.is_active,
         warnings_count=session.warnings_count or 0,
         is_active=session.is_active
@@ -120,6 +150,7 @@ async def start_interview(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    user_id = current_user.id
     try:
         # Validate inputs before touching credits
         validate_job_description(job_description)
@@ -130,21 +161,21 @@ async def start_interview(
         # It acquires a SELECT FOR UPDATE row lock, checks credits, and deducts
         # in a single atomic step — no separate eligibility check, no TOCTOU gap.
         # Raises HTTP 403 automatically if credits are zero.
-        credit_type = await deduct_feature_usage_atomic(db, current_user.id, "mock_interview")
+        credit_type = await deduct_feature_usage_atomic(db, user_id, "mock_interview")
         await db.commit()  # Commit reservation immediately so all concurrent requests see it
 
         from app.schemas.interview import InterviewStartRequest
         req = InterviewStartRequest(resume_text=resume_text, job_description=job_description)
 
         try:
-            response = await interview_service.start_interview(db, current_user.id, req)
+            response = await interview_service.start_interview(db, user_id, req)
             await db.commit()
             return response
         except Exception as ai_err:
             # AI call failed — refund the reserved credit
             logger.error(f"AI call failed after credit reservation, refunding: {ai_err}")
             await db.rollback()
-            await refund_feature_usage_atomic(db, current_user.id, "mock_interview", credit_type)
+            await refund_feature_usage_atomic(db, user_id, "mock_interview", credit_type)
             await db.commit()
             if isinstance(ai_err, IntegrityError):
                 raise HTTPException(
@@ -222,6 +253,72 @@ async def process_response(
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+@router.websocket("/{session_id}/live")
+async def process_live_response(
+    websocket: WebSocket,
+    session_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    await websocket.accept()
+
+    user = await _get_websocket_user(websocket, db)
+    if not user:
+        await websocket.send_json({"type": "error", "message": "Unauthorized live interview connection."})
+        await websocket.close(code=1008)
+        return
+
+    session_stmt = select(InterviewSession).where(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == user.id,
+        InterviewSession.interview_type == "video",
+        InterviewSession.is_active == True
+    )
+    session_res = await db.execute(session_stmt)
+    session = session_res.scalar_one_or_none()
+    if not session:
+        await websocket.send_json({"type": "error", "message": "Session not found, unauthorized, or already completed."})
+        await websocket.close(code=1008)
+        return
+
+    await websocket.send_json({
+        "type": "ready",
+        "question": session.current_question or "Starting live interview...",
+        "question_number": session.question_number,
+        "total_questions": VIDEO_TOTAL_QUESTIONS,
+        "warnings_count": session.warnings_count or 0,
+    })
+
+    try:
+        raw_message = await websocket.receive_text()
+        payload = json.loads(raw_message)
+        if payload.get("type") != "start_answer":
+            await websocket.send_json({"type": "error", "message": "Live answer did not start correctly."})
+            await websocket.close(code=1003)
+            return
+
+        response = await interview_service.process_live_response_stream(db, session_id, websocket)
+        await db.commit()
+        await websocket.send_json({
+            "type": "question",
+            "data": _response_to_dict(response),
+        })
+        await websocket.close(code=1000)
+    except WebSocketDisconnect:
+        await db.rollback()
+        logger.info("Live video interview websocket disconnected for session %s", session_id)
+    except Exception as e:
+        await db.rollback()
+        logger.error("Error processing live video response: %s", e, exc_info=True)
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Could not process live interview answer. Please try again.",
+            })
+            await websocket.close(code=1011)
+        except Exception:
+            pass
 
 
 @router.post("/{session_id}/skip", response_model=InterviewResponse)
@@ -415,17 +512,17 @@ async def get_result(
         if (session.warnings_count or 0) >= 5:
             raise HTTPException(status_code=400, detail="Interview discarded due to malpractice. No result generated.")
 
-        if len(session.history or []) < 8:
+        if len(session.history or []) < VIDEO_TOTAL_QUESTIONS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Interview is incomplete. Please complete all questions (currently at {len(session.history or [])}/8) before requesting the result."
+                detail=f"Interview is incomplete. Please complete all questions (currently at {len(session.history or [])}/{VIDEO_TOTAL_QUESTIONS}) before requesting the result."
             )
 
         # Block result generation until the interview is actually complete
         if session.is_active:
             raise HTTPException(
                 status_code=400,
-                detail=f"Interview is still in progress. Please complete all questions (currently at {len(session.history or [])}/8) before requesting the result."
+                detail=f"Interview is still in progress. Please complete all questions (currently at {len(session.history or [])}/{VIDEO_TOTAL_QUESTIONS}) before requesting the result."
             )
 
         session.result_status = "generating"

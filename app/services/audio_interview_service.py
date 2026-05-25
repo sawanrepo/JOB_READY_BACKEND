@@ -26,6 +26,15 @@ AUDIO_TRANSCRIBE_FORMAT_BY_EXTENSION = {
     ".ogg": "ogg",
 }
 
+AUDIO_GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite-preview",
+]
+
 
 def get_transcribe_media_format(audio_path: str) -> str:
     ext = os.path.splitext(audio_path)[1].lower()
@@ -38,6 +47,11 @@ def get_transcribe_media_format(audio_path: str) -> str:
 class AudioInterviewService:
     def __init__(self):
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        self.backup_client = (
+            genai.Client(api_key=settings.GEMINI_API_KEY_BACKUP)
+            if settings.GEMINI_API_KEY_BACKUP
+            else None
+        )
         self.model_id = 'gemini-2.5-flash'
         
         # AWS Clients
@@ -61,34 +75,46 @@ class AudioInterviewService:
             self.s3 = None
             self.transcribe = None
 
+    def _clients_with_labels(self):
+        clients = [("primary", self.client)]
+        if self.backup_client:
+            clients.append(("backup", self.backup_client))
+        return clients
+
     async def _generate_content_with_fallback(self, prompt: str, system_instruction: str = None, response_mime_type: str = None, temperature: float = 0.8) -> str:
-        # Try gemini-2.5-flash first, then try highly stable and lite backups
-        models = [
-            'gemini-2.5-flash',
-            'gemini-3.0-flash',
-            'gemini-3.1-flash-lite-preview'
-        ]
-        
         last_err = None
-        for model in models:
-            try:
-                logger.info(">>> LLM CALL START | Model: %s | Prompt chars: %d", model, len(prompt))
-                config_args = {"temperature": temperature}
-                if system_instruction:
-                    config_args["system_instruction"] = system_instruction
-                if response_mime_type:
-                    config_args["response_mime_type"] = response_mime_type
-                    
-                response = await self.client.aio.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(**config_args)
-                )
-                logger.info("<<< LLM CALL SUCCESS | Model: %s", model)
-                return response.text
-            except Exception as e:
-                logger.warning("LLM call failed for model %s: %s. Trying backup model...", model, e)
-                last_err = e
+        for model in AUDIO_GEMINI_MODELS:
+            for key_label, client in self._clients_with_labels():
+                try:
+                    logger.info(
+                        ">>> LLM CALL START | Model: %s | Key: %s | Prompt chars: %d",
+                        model,
+                        key_label,
+                        len(prompt),
+                    )
+                    config_args = {"temperature": temperature}
+                    if system_instruction:
+                        config_args["system_instruction"] = system_instruction
+                    if response_mime_type:
+                        config_args["response_mime_type"] = response_mime_type
+
+                    response = await client.aio.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(**config_args)
+                    )
+                    if not response.text:
+                        raise ValueError("Gemini returned an empty text response.")
+                    logger.info("<<< LLM CALL SUCCESS | Model: %s | Key: %s", model, key_label)
+                    return response.text
+                except Exception as e:
+                    logger.warning(
+                        "LLM call failed for model %s with %s key: %s. Trying next key/model...",
+                        model,
+                        key_label,
+                        e,
+                    )
+                    last_err = e
         
         # If all models failed, raise clean exception
         err_str = str(last_err)
@@ -498,6 +524,15 @@ class AudioInterviewService:
             raise ValueError("Interview is still processing. Please try again shortly.")
 
         history_json = json.dumps(session.history, indent=2)
+        question_answer_pairs = [
+            {
+                "question": item.get("question") or "",
+                "answer_text": item.get("answer_text") or "",
+                "status": item.get("status") or "completed",
+            }
+            for item in history
+            if item
+        ]
 
         prompt = AUDIO_INTERVIEW_REPORT_PROMPT.format(
             resume_text=session.resume_text,
@@ -526,6 +561,7 @@ class AudioInterviewService:
             
             suggestions = raw_result.get("improvement_suggestions") or []
             sanitized["improvement_suggestions"] = [suggestions] if isinstance(suggestions, str) else suggestions
+            sanitized["question_answer_pairs"] = question_answer_pairs
                 
             return sanitized
 

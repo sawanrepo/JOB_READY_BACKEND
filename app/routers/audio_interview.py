@@ -55,8 +55,36 @@ def _extension_from_upload(audio: UploadFile) -> str:
 
     raise HTTPException(status_code=400, detail=UNSUPPORTED_AUDIO_FORMAT_MESSAGE)
 
+
+def _audio_transcription_progress(session: InterviewSession) -> dict:
+    questions = session.questions or []
+    history = session.history or []
+    transcribed_count = sum(
+        1
+        for item in history
+        if item is not None and not item.get("error") and item.get("answer_text")
+    )
+    total_questions = len(questions)
+    current_answer_index = 0
+    for index in range(total_questions):
+        item = history[index] if index < len(history) else None
+        if item is None or item.get("error") or not item.get("answer_text"):
+            current_answer_index = index + 1
+            break
+    if total_questions and current_answer_index == 0:
+        current_answer_index = total_questions
+
+    return {
+        "stage": "transcribing",
+        "message": "Interview answers are still being transcribed.",
+        "transcribed_count": transcribed_count,
+        "total_questions": total_questions,
+        "current_answer_index": current_answer_index,
+    }
+
+
 @router.get("/session/{session_id}")
-@limiter.limit("10/minute")
+@limiter.limit("30/minute")
 async def get_audio_session_status(
     request: Request,
     session_id: str,
@@ -85,6 +113,7 @@ async def get_audio_session_status(
         "is_active": session.is_active,
         "processing_status": session.processing_status or "idle",
         "result_status": session.result_status or "pending",
+        "transcription_progress": _audio_transcription_progress(session),
     }
 
 
@@ -97,6 +126,7 @@ async def start_audio_interview(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    user_id = current_user.id
     try:
         if not audio_interview_service.s3 or not audio_interview_service.transcribe or not settings.AWS_S3_BUCKET_NAME:
             raise HTTPException(status_code=503, detail="Audio transcription service is not configured. Please try again later.")
@@ -110,20 +140,20 @@ async def start_audio_interview(
         # It acquires a SELECT FOR UPDATE row lock, checks credits, and deducts
         # in a single atomic step — no separate eligibility check, no TOCTOU gap.
         # Raises HTTP 403 automatically if credits are zero.
-        credit_type = await deduct_feature_usage_atomic(db, current_user.id, "audio_interview")
+        credit_type = await deduct_feature_usage_atomic(db, user_id, "audio_interview")
         await db.commit()  # Commit reservation immediately so concurrent requests see it
 
         req = InterviewStartRequest(resume_text=resume_text, job_description=job_description)
 
         try:
-            response = await audio_interview_service.start_audio_interview(db, current_user.id, req)
+            response = await audio_interview_service.start_audio_interview(db, user_id, req)
             await db.commit()
             return response
         except Exception as ai_err:
             # AI/session creation failed — refund the reserved credit
             logger.error(f"Audio interview start failed after credit reservation, refunding: {ai_err}")
             await db.rollback()
-            await refund_feature_usage_atomic(db, current_user.id, "audio_interview", credit_type)
+            await refund_feature_usage_atomic(db, user_id, "audio_interview", credit_type)
             await db.commit()
             if isinstance(ai_err, IntegrityError):
                 raise HTTPException(
@@ -324,7 +354,13 @@ async def get_audio_result(
             raise HTTPException(status_code=404, detail="Session not found or unauthorized")
 
         if session.result_status == "generating":
-            raise HTTPException(status_code=202, detail="Result generation is already in progress. Please try again shortly.")
+            raise HTTPException(
+                status_code=202,
+                detail={
+                    "stage": "generating_report",
+                    "message": "Generating final report. Please try again shortly.",
+                },
+            )
 
         # Block result generation until all questions have been answered
         if session.question_number < len(session.questions or []):
@@ -342,7 +378,7 @@ async def get_audio_result(
             )
         )
         if not transcripts_complete:
-            raise HTTPException(status_code=202, detail="Interview is still processing. Please try again shortly.")
+            raise HTTPException(status_code=202, detail=_audio_transcription_progress(session))
 
         warnings_count = session.warnings_count if session else 0
         session.result_status = "generating"
