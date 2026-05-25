@@ -10,6 +10,12 @@ import re
 
 logger = logging.getLogger(__name__)
 
+RESUME_GEMINI_MODELS = [
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite",
+]
+
 
 def _raise_for_gemini_error(e: Exception) -> None:
     """Convert Gemini / Google API errors into clean HTTP exceptions."""
@@ -37,8 +43,8 @@ class GeminiService:
             if settings.GEMINI_API_KEY_BACKUP
             else None
         )
-        # Using the future-proof model ID found in the user's environment
-        self.model_id = "gemini-3.1-flash-lite-preview"
+        self.model_ids = RESUME_GEMINI_MODELS
+        self.model_id = self.model_ids[0]
 
     def _clients_with_labels(self):
         clients = [("primary", self.client)]
@@ -49,34 +55,35 @@ class GeminiService:
     async def _generate_resume_content(self, context: str, prompt: str, system_instruction: str):
         last_err = None
 
-        for key_label, client in self._clients_with_labels():
-            try:
-                logger.info(
-                    ">>> LLM CALL START [%s] | Model: %s | Key: %s | Prompt chars: %d",
-                    context,
-                    self.model_id,
-                    key_label,
-                    len(prompt),
-                )
-                response = await client.aio.models.generate_content(
-                    model=self.model_id,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=0.2
+        for model_id in self.model_ids:
+            for key_label, client in self._clients_with_labels():
+                try:
+                    logger.info(
+                        ">>> LLM CALL START [%s] | Model: %s | Key: %s | Prompt chars: %d",
+                        context,
+                        model_id,
+                        key_label,
+                        len(prompt),
                     )
-                )
-                logger.info("<<< LLM CALL SUCCESS [%s] | Model: %s | Key: %s", context, self.model_id, key_label)
-                return response
-            except Exception as e:
-                logger.warning(
-                    "LLM call failed [%s] | Model: %s | Key: %s: %s",
-                    context,
-                    self.model_id,
-                    key_label,
-                    e,
-                )
-                last_err = e
+                    response = await client.aio.models.generate_content(
+                        model=model_id,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=0.2
+                        )
+                    )
+                    logger.info("<<< LLM CALL SUCCESS [%s] | Model: %s | Key: %s", context, model_id, key_label)
+                    return response
+                except Exception as e:
+                    logger.warning(
+                        "LLM call failed [%s] | Model: %s | Key: %s: %s",
+                        context,
+                        model_id,
+                        key_label,
+                        e,
+                    )
+                    last_err = e
 
         logger.error("!!! LLM CALL FAILED [%s] after primary/backup keys: %s", context, last_err, exc_info=True)
         _raise_for_gemini_error(last_err)
